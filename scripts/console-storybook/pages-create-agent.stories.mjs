@@ -64,7 +64,8 @@ export const CreatePresetWorkspaceFiles = {
   name: "Preset workspace files",
 };
 export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "Workspace files" };
-export const CreateEmbedded = { ...story("createEmbedded"), name: "OpenAI with OpenClaw harness" };
+export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
+export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded OpenClaw" };
 export const CreateDedicatedOpenclawExperimental = {
   ...story("createDedicatedOpenclawExperimental"),
   name: "Experimental Dedicated OpenClaw",
@@ -112,12 +113,35 @@ export const CreateBoundCredentialPreset = {
   ...story("createBoundCredentialPreset"),
   name: "Preset with saved model credential",
 };
+export const CreatePresetInvalidField = {
+  ...story("createPresetInvalidField"),
+  name: "Preset with an invalid field",
+};
+export const CreateCapabilitiesDenied = {
+  ...story("createCapabilitiesDenied"),
+  name: "Agent creation needs an administrator",
+};
+export const CreateCapabilitiesError = {
+  ...story("createCapabilitiesError"),
+  name: "Capability check failure",
+};
 export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets" };
+export const CreateWithoutPreset = {
+  ...story("createWithoutPreset"),
+  name: "Start without Preset",
+};
 export const CreateAnthropic = {
   ...story("createAnthropic"),
   name: "Anthropic with OpenClaw harness",
 };
 export const CreateCodexPat = { ...story("createCodexPat"), name: "Service Accounts" };
+export const CreateOAuth = story("createOAuth");
+export const CreateOAuthPending = story("createOAuthPending");
+export const CreateOAuthReady = story("createOAuthReady");
+export const CreateOAuthDenied = story("createOAuthDenied");
+export const CreateOAuthUnavailable = story("createOAuthUnavailable");
+export const CreateOAuthError = story("createOAuthError");
+export const CreateOAuthExpired = story("createOAuthExpired");
 export const CreatePatToOpenClaw = {
   ...story("createPatToOpenClaw"),
   name: "Switch from Service Accounts to OpenClaw",
@@ -143,6 +167,10 @@ export const CreateUnknown = { ...story("createUnknown"), name: "Provisioning ou
 export const CreatePasswordPreset = {
   ...story("createPasswordPreset"),
   name: "Standard Codex password variable",
+};
+export const CreatePasswordPresetMissingModel = {
+  ...story("createPasswordPresetMissingModel"),
+  name: "Standard Codex missing model",
 };
 export const CreatePasswordPresetDraft = {
   ...story("createPasswordPresetDraft"),
@@ -188,3 +216,11 @@ export const CreatePresetNavigation = story("createPresetNavigation");
 export const PresetVariableNavigation = story("presetVariableNavigation");
 
 export const RepositoryNavigationOutage = story("createRepositoryNavigationOutage");
+
+export const DefaultPresetLoading = story("createDefaultPresetLoading");
+export const DefaultPresetDenied = story("createDefaultPresetDenied");
+
+export const ExistingFallbackPrimary = {
+  ...story("createModelFallbackSelection"),
+  name: "Choose an existing fallback as primary",
+};

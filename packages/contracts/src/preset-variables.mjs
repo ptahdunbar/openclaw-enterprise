@@ -2,7 +2,7 @@
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOKEN = /^\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
 const RESERVED = /\{\{\s*vars\./;
-const MAX_BYTES = 1024 * 1024;
+export const PRESET_JSON_MAX_BYTES = 1024 * 1024;
 const MAX_DEPTH = 64;
 const MAX_WORKSPACE_FILE_BYTES = 16 * 1024;
 const INITIAL_WORKSPACE_FILE_NAMES = Object.freeze([
@@ -49,7 +49,7 @@ function checkJson(value, path = "template", depth = 0) {
 }
 
 function checkSize(value) {
-  if (new TextEncoder().encode(JSON.stringify(value)).length > MAX_BYTES) {
+  if (new TextEncoder().encode(JSON.stringify(value)).length > PRESET_JSON_MAX_BYTES) {
     fail("template", "JSON exceeds maximum size of 1 MiB.");
   }
 }
@@ -112,7 +112,7 @@ function tokens(text, definitions, path) {
     } else {
       const name = token[1];
       if (!Object.hasOwn(definitions, name)) {
-        fail(path, `variable ${name} is undeclared.`);
+        fail(path, `variable ${name} is undeclared; declare it under variables.`);
       }
       parts.push({ name });
     }
@@ -212,7 +212,7 @@ export function validatePresetTemplate(template) {
     }
     closedObject(definition, ["type", "description", "default"], `variables.${name}`);
     if (!["string", "number", "boolean", "password"].includes(definition.type)) {
-      fail(`variables.${name}`, "unsupported type.");
+      fail(`variables.${name}`, "type must be string, number, boolean, or password.");
     }
     if (Object.hasOwn(definition, "description") && typeof definition.description !== "string") {
       fail(`variables.${name}`, "description must be a string.");
@@ -221,7 +221,7 @@ export function validatePresetTemplate(template) {
       fail(`variables.${name}`, "password variables cannot have stored defaults.");
     }
     if (Object.hasOwn(definition, "default") && !scalar(definition.default, definition.type)) {
-      fail(`variables.${name}`, "default must match its declared type.");
+      fail(`variables.${name}`, `default must match its declared type, ${definition.type}.`);
     }
   }
   if (Object.hasOwn(template, "agent")) {
@@ -355,6 +355,32 @@ function validateRepositorySettings(agent, partial) {
  */
 export function renderPresetTemplate(template, inputs = {}) {
   return render(template, inputs, false);
+}
+
+/** Name declared variables without defaults that the template references; rendering needs them.
+ * @param {import('./presets.ts').PresetTemplate} template
+ * @returns {Set<string>}
+ */
+export function requiredPresetVariables(template) {
+  const definitions = template.variables ?? {};
+  const required = new Set();
+  const visit = (value) => {
+    if (typeof value === "string") {
+      for (const part of tokens(value, definitions, "template")) {
+        if (typeof part !== "string" && !Object.hasOwn(definitions[part.name], "default")) {
+          required.add(part.name);
+        }
+      }
+    } else if (value !== null && typeof value === "object") {
+      for (const [key, child] of Object.entries(value)) {
+        visit(key);
+        visit(child);
+      }
+    }
+  };
+  visit(template.agent);
+  visit(template.configuration);
+  return required;
 }
 
 // Credential admission permits unfilled string references while validating literal/default values.

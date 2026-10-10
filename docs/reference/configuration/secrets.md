@@ -38,12 +38,21 @@ use reserved process-control prefixes such as `OPENCLAW_`, `CODEX_`, `OCC_`,
 authentication destinations are reserved for `harnessAuth`.
 
 OCC rejects cross-Namespace references and missing or foreign backend objects
-even if IAM would otherwise allow the operation. Creating or updating a
+even if IAM would otherwise allow the operation. When a Configuration write or Agent
+provisioning submits bindings, a reserved or invalid destination or a Secret
+reference to another Namespace fails with `400 INVALID_REQUEST` and a message
+naming the rule; so does an Agent `harnessAuth` source in another Namespace. A
+reference to a Secret the Namespace does not hold fails with `404`. Creating or updating a
 Configuration whose resulting document contains bindings requires the normal
 Configuration mutation permission and `operate` on every selected Secret,
 including retained bindings when PATCH omits `secretBindings`. Creating or
 updating an Agent assignment to a bound Configuration requires the normal Agent
-mutation permission and `operate` on each exact Secret. Namespace membership,
+mutation permission and `operate` on each exact Secret. Each check also requires
+the selected SecretDriver to own the Secret: after the Installation selects
+another SecretDriver, a write that keeps an old binding, and every create,
+update, or deployment of an Agent assigned to that Configuration, fails with `503` and a
+message naming the fix. Update the Configuration with replacement
+`secretBindings`, or assign the Agent another Configuration. Namespace membership,
 Configuration access, Agent access, or possession of a ref does not grant
 consumption. Deployment stores normalized references and the selected
 SecretDriver identity in the immutable AgentRevision; it does not store backend
@@ -59,7 +68,8 @@ credentials. Never put plaintext values in Configuration `values`.
 
 The Kubernetes and filesystem Configuration Drivers reject literal model API
 keys, credential headers, and model credential environment values in their
-known native fields before storage. Unresolved references remain valid
+known native fields before storage. The `400` names the field as a JSON pointer
+within `values`, never the value. Unresolved references remain valid
 Configuration data; deployment separately rejects model credential selectors
 that compete with the Agent's binding.
 
@@ -84,10 +94,10 @@ operator-provided ingress and remains unverified end to end.
 providers. The recognized native channel configurations consume these
 gateway-only credential values:
 
-| Provider  | Gateway Secret keys                     |
-| --------- | --------------------------------------- |
-| `slack`   | `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` |
-| `msteams` | `MSTEAMS_APP_PASSWORD`                  |
+| Provider  | Gateway Secret keys                                                                                       |
+| --------- | --------------------------------------------------------------------------------------------------------- |
+| `slack`   | `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` for the default account; account-specific keys for named accounts |
+| `msteams` | `MSTEAMS_APP_PASSWORD`                                                                                    |
 
 Every environment SecretRef used by an enabled native channel must have a
 matching `secretBindings` entry before deployment admission. Disabled channel
@@ -112,6 +122,39 @@ Add a native default Slack account with environment SecretRefs:
 }
 ```
 
+Give each named account under `channels.slack.accounts` its own environment
+names, such as `SLACK_WORK_APP_TOKEN` and `SLACK_WORK_BOT_TOKEN`, with a
+matching `secretBindings` entry for each:
+
+```json
+{
+  "channels": {
+    "slack": {
+      "enabled": true,
+      "mode": "socket",
+      "accounts": {
+        "work": {
+          "appToken": { "source": "env", "provider": "default", "id": "SLACK_WORK_APP_TOKEN" },
+          "botToken": { "source": "env", "provider": "default", "id": "SLACK_WORK_BOT_TOKEN" },
+          "dmPolicy": "allowlist",
+          "allowFrom": ["U0123456789"]
+        }
+      }
+    }
+  }
+}
+```
+
+With named accounts, remove any `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN`
+bindings unless you also want a top-level default account (or name an account
+`default`). OpenClaw reads those two names from the gateway environment as an
+implicit `default` account. That account opens a second Socket Mode connection,
+receives a share of the Slack app's events, and applies the top-level
+`channels.slack` policy (`dmPolicy`, `allowFrom`) instead of the named account's
+restrictions. The console's Slack editor handles only the default account; for
+named accounts its Credentials tab checks the keys the document references, and
+you bind them through the Configuration API.
+
 The console's new Slack setup and bundled Slack Presets set
 `channels.slack.replyToModeByChatType.channel: "all"`, which threads channel
 replies without changing DM or group-DM reply behavior. Existing Slack blocks
@@ -121,7 +164,7 @@ Configuration JSON; per-channel overrides still take precedence. The API stores
 the supplied native document unchanged, so API clients should include the
 chat-type setting shown above. Save and redeploy to apply a change.
 
-The console exposes **Direct-message policy** and **Allowed DM user IDs**
+The console exposes **Direct-message policy** and **Allowed people in direct messages**
 separately from channel access. New setup selects `allowlist` and requires sender
 IDs before saving; choose `disabled` for channel-only access. `pairing` admits
 approved senders, with optional preapproved IDs. Selecting `open` writes

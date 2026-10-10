@@ -1,0 +1,195 @@
+{
+  "input": 16,
+  "withheld": 7,
+  "records": [
+    {
+      "type": "withheld",
+      "time": "2026-09-30T17:37:31.093426410Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "count": 7,
+      "reason": "malformed"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T17:37:31.315256676Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "wrapper",
+      "level": "info",
+      "message": "runtime.startup_phase",
+      "fields": {
+        "container": "agent",
+        "phase": "workspace-baseline",
+        "outcome": "ok",
+        "ms": 3315,
+        "sinceStartMs": 3326
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T17:37:31.315574759Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "wrapper",
+      "level": "info",
+      "message": "runtime.startup_phase",
+      "fields": {
+        "container": "agent",
+        "phase": "supervisor-spawn",
+        "outcome": "ok",
+        "ms": 3328,
+        "sinceStartMs": 3328
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T17:37:31.437872708Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "wrapper",
+      "level": "info",
+      "message": "runtime.startup_phase",
+      "fields": {
+        "container": "agent",
+        "phase": "codex-login",
+        "outcome": "ok",
+        "ms": 77,
+        "sinceStartMs": 79
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T17:37:33.077650948Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "wrapper",
+      "level": "info",
+      "message": "runtime.startup_phase",
+      "fields": {
+        "container": "agent",
+        "phase": "node-setup",
+        "outcome": "ok",
+        "ms": 1761,
+        "sinceStartMs": 5089
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T17:37:36.927337215Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "text",
+      "level": "unknown",
+      "message": "[node-host] advertised commands: dir.list, file.create, file.fetch, file.stat, file.write, workspace.memory, workspace.skills"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T17:37:37.181685580Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "text",
+      "level": "unknown",
+      "message": "node host gateway connected: wss://occ-gateway-000000000000.envoy-gateway-system.svc:443/namespaces/ns_00000000-0000-4000-8000-000000000000/agents/agt_00000000-0000-4000-8000-000000000000/node"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T17:37:47.518883116Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "wrapper",
+      "level": "error",
+      "message": "codex.model_probe",
+      "fields": {
+        "attempt": 1,
+        "elapsedMs": 16082,
+        "exitCode": 1,
+        "code": "AUTHENTICATION_FAILED"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T17:37:47.518904886Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "wrapper",
+      "level": "error",
+      "message": "runtime.startup_phase",
+      "fields": {
+        "container": "agent",
+        "phase": "model-probe",
+        "outcome": "failed",
+        "ms": 16082,
+        "sinceStartMs": 16163
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T17:37:47.519258164Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "wrapper",
+      "level": "error",
+      "message": "Harness model authentication probe failed."
+    }
+  ]
+}

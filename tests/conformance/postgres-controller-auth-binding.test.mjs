@@ -75,8 +75,13 @@ async function constructionAndRefusal() {
   assert.deepEqual(calls, []);
 
   const response = await signIn(controller, selected.baseURL);
-  // The real adapter reaches the supplied pool and sanitizes its refusal.
-  assert.deepEqual(calls, [{ method: "query", receiver: pool }]);
+  // The known-device state read (before the password check) reaches the supplied pool and
+  // its refusal only skips the marking; the real adapter then reaches the pool and
+  // sanitizes its refusal.
+  assert.deepEqual(calls, [
+    { method: "query", receiver: pool },
+    { method: "query", receiver: pool },
+  ]);
   assert.deepEqual(response, {
     status: 503,
     headers: {},

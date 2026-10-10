@@ -99,6 +99,10 @@
                     "label": "Workspace Files"
                   },
                   {
+                    "page": "guides/topics/agent-logs",
+                    "label": "Runtime Logs"
+                  },
+                  {
                     "page": "reference/console",
                     "label": "Console"
                   },
@@ -179,6 +183,10 @@
                   {
                     "page": "reference/credential-sources",
                     "label": "Credential Sources"
+                  },
+                  {
+                    "page": "reference/credential-sources/withdrawal",
+                    "label": "Credential Withdrawal"
                   },
                   {
                     "page": "guides/topics/audit-log",
@@ -276,6 +284,10 @@
                           {
                             "page": "reference/drivers/kubernetes-compute/storage-and-credentials",
                             "label": "Storage and Credentials"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/codex-oauth-storage",
+                            "label": "Codex OAuth Storage"
                           }
                         ]
                       },
@@ -401,7 +413,11 @@
                 ]
               }
             ],
-            "hidden": ["guides/repository-credentials/standalone-service"]
+            "hidden": [
+              "guides/repository-credentials/standalone-service",
+              "guides/repository-credentials/development-token",
+              "reference/repository-credentials/development-token"
+            ]
           },
           {
             "tab": "Operate",
@@ -435,12 +451,36 @@
                     "label": "Profiles"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes",
+                    "label": "Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-archive",
+                    "label": "Earlier Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/split-layout-upgrade",
+                    "label": "Split-Layout Upgrade"
+                  },
+                  {
                     "page": "guides/deploy/upgrade-checklist",
                     "label": "Upgrade Checklist"
                   },
                   {
+                    "page": "guides/deploy/upgrade-dispositions",
+                    "label": "Upgrade Dispositions"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-baseline",
+                    "label": "Upgrade Baseline"
+                  },
+                  {
                     "page": "guides/deploy/production-upgrade",
                     "label": "Image Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/production-installation-changes",
+                    "label": "Installation Changes"
                   },
                   {
                     "page": "guides/deploy/production-upgrade-recovery",
@@ -448,11 +488,19 @@
                   },
                   {
                     "page": "guides/deploy/auth-maintenance",
-                    "label": "Sign-in Maintenance"
+                    "label": "External Sign-in Maintenance"
                   },
                   {
                     "page": "guides/deploy/google-sign-in",
                     "label": "Google Sign-in"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-sign-in",
+                    "label": "OIDC Sign-in"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-keycloak",
+                    "label": "Keycloak Sign-in"
                   },
                   {
                     "page": "guides/deploy/local-k3d-image-upgrade",
@@ -499,6 +547,10 @@
                   {
                     "page": "guides/operate/model-verification",
                     "label": "Model Response Verification"
+                  },
+                  {
+                    "page": "guides/operate/network-isolation",
+                    "label": "Network Isolation Check"
                   },
                   {
                     "page": "guides/deploy/native-admin",
@@ -641,6 +693,10 @@
                   {
                     "page": "contributing/README",
                     "label": "Overview"
+                  },
+                  {
+                    "page": "contributing/sprints",
+                    "label": "Sprint Planning"
                   }
                 ]
               },
@@ -652,8 +708,12 @@
                     "label": "Overview"
                   },
                   {
+                    "page": "contributing/specifications",
+                    "label": "RFCs and Plans"
+                  },
+                  {
                     "page": "contributing/rfcs",
-                    "label": "RFCs"
+                    "label": "RFC Review"
                   },
                   {
                     "page": "contributing/design-philosophy",
@@ -701,6 +761,10 @@
                       {
                         "page": "reference/drivers/credential-gateway",
                         "label": "Credential Gateway"
+                      },
+                      {
+                        "page": "reference/drivers/credential-refresh",
+                        "label": "Credential Refresh"
                       },
                       {
                         "page": "reference/drivers/iam",
@@ -789,6 +853,18 @@
                         "label": "CI"
                       },
                       {
+                        "page": "testing/ci-k3d-images",
+                        "label": "k3d Images"
+                      },
+                      {
+                        "page": "testing/first-agent-smoke",
+                        "label": "First Agent Smoke"
+                      },
+                      {
+                        "page": "testing/keycloak",
+                        "label": "Keycloak OIDC Lane"
+                      },
+                      {
                         "page": "testing/ci-manual-integration",
                         "label": "Manual Integration Lanes"
                       },
@@ -852,6 +928,7 @@
               "flows/audit-ledger",
               "flows/controller-worker",
               "flows/agent-deployment-diagnostics",
+              "flows/agent-runtime-logs",
               "flows/platform-console",
               "flows/platform-console/agent-editing",
               "flows/platform-console/agent-sharing",
@@ -868,6 +945,7 @@
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
               "flows/credential-source-lifecycle",
+              "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
@@ -880,9 +958,11 @@
               "flows/workspace-files",
               "flows/pr-24-ssh-compute",
               "flows/github-actions-testing",
+              "flows/clawsweeper-dispatch",
               "flows/container-package-bootstrap",
               "flows/container-publication",
               "flows/cli-publication",
+              "flows/cli-agent-browsing",
               "flows/github-actions-testing/preparation",
               "testing/postgresql",
               "testing/images",
@@ -894,9 +974,13 @@
               "testing/gateway-routing",
               "testing/production-tui",
               "testing/slack",
+              "testing/qa-matrix",
+              "testing/qa-matrix-results",
               "testing/service-accounts",
               "testing/plugins",
+              "testing/plugins-proof-notes",
               "testing/openshell",
+              "testing/openshell-first-agent",
               "testing/openshell-pre5-local-experiment",
               "flows/agent-repository-credentials",
               "flows/repository-credentials",

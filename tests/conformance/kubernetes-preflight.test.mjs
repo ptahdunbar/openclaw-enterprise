@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { KubernetesApiUnavailableError } from "../../apps/controller/src/drivers/kubernetes/client.ts";
+import {
+  createKubernetesComputeDriver,
+  kubernetesGatewayNamespaceName,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
+import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
+import {
+  conformanceKubernetesOptions,
+  createTestKubernetesComputeDriver,
+} from "../helpers/kubernetes-compute.mjs";
+import { refusingPort } from "../helpers/available-port.mjs";
 
 function driverForVersion(gitVersion) {
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-preflight");
@@ -49,8 +63,358 @@ test("Kubernetes preflight accepts supported Kubernetes release families", async
   }
 });
 
+test("single-cluster preflight refuses legacy split storage on a later namespace page", async () => {
+  const fixture = driverForVersion("v1.35.0");
+  const { core } = await fixture.driver.apiClients;
+  const namespaceId = "ns_upgrade_00000000-0000-4000-8000-000000000001";
+  const legacy = {
+    metadata: {
+      name: kubernetesGatewayNamespaceName(namespaceId),
+      labels: { "openclaw.dev/gateway-namespace": namespaceId },
+    },
+  };
+  const original = structuredClone(legacy);
+  let pages = 0;
+  core.listNamespace = async ({ _continue: cursor }) => {
+    pages += 1;
+    if (cursor === undefined) {
+      return { items: [], metadata: { _continue: "next-page" } };
+    }
+    assert.equal(cursor, "next-page");
+    return { items: [legacy] };
+  };
+  await assert.rejects(fixture.driver.preflight(), /Existing split-layout Gateway storage/);
+  assert.equal(pages, 2, "upgrade detection must inspect every namespace page");
+  assert.deepEqual(legacy, original, "preflight must not alter legacy storage ownership");
+});
+
+test("single-cluster preflight accepts canonical storage in a shared tenant namespace", async () => {
+  const fixture = driverForVersion("v1.35.0");
+  const { core } = await fixture.driver.apiClients;
+  core.listNamespace = async () => ({
+    items: [
+      {
+        metadata: {
+          name: "adopted-tenant",
+          labels: {
+            "openclaw.dev/gateway-namespace": "ns_shared",
+            "openclaw.dev/namespace": "ns_shared",
+          },
+        },
+      },
+    ],
+  });
+  assert.deepEqual(await fixture.driver.preflight(), { warnings: [] });
+});
+
 test("Kubernetes preflight rejects an invalid API server version response", async () => {
   const fixture = driverForVersion("current");
   await assert.rejects(fixture.driver.preflight(), /version preflight returned invalid data/);
   assert.equal(fixture.namespaceReads(), 0);
+});
+
+test("Kubernetes preflight names the unreachable API server endpoint", async (t) => {
+  // A held loopback port refuses connections; a released one could be taken by a parallel test.
+  const refusing = await refusingPort();
+  t.after(() => refusing.release());
+  const { port } = refusing;
+  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-preflight-"));
+  try {
+    const kubeconfigPath = join(directory, "kubeconfig");
+    await writeFile(
+      kubeconfigPath,
+      [
+        "apiVersion: v1",
+        "kind: Config",
+        `clusters: [{name: target, cluster: {server: "https://127.0.0.1:${port}"}}]`,
+        "users: [{name: operator, user: {token: preflight-token}}]",
+        "contexts: [{name: target, context: {cluster: target, user: operator}}]",
+        "current-context: target",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    const driver = createTestKubernetesComputeDriver("compute-kubernetes-unreachable", {
+      authentication: { mode: "kubeconfig", kubeconfigPath, context: "target" },
+    });
+
+    const error = await driver.preflight().then(
+      () => assert.fail("preflight must fail when the Kubernetes API is unreachable"),
+      (failure) => failure,
+    );
+
+    assert.ok(error instanceof KubernetesApiUnavailableError, String(error));
+    assert.equal(error.host, "127.0.0.1");
+    assert.equal(error.port, port);
+    assert.deepEqual(startupDependencyFailure(error), {
+      code: "KUBERNETES_API_UNAVAILABLE",
+      host: "127.0.0.1",
+      port,
+    });
+    assert.equal(startupDependencyFailure(new Error("fetch failed")), undefined);
+
+    const lines = [];
+    const logger = createOccLogger({
+      component: "occ-worker",
+      destination: {
+        write(chunk) {
+          lines.push(JSON.parse(String(chunk)));
+          return true;
+        },
+      },
+    });
+    emitOccLogEvent(logger, { event: "worker.startup-error", ...startupDependencyFailure(error) });
+    assert.deepEqual(
+      lines.map(({ severity, event, code, host, port: loggedPort }) => ({
+        severity,
+        event,
+        code,
+        host,
+        port: loggedPort,
+      })),
+      [
+        {
+          severity: "ERROR",
+          event: "worker.startup-error",
+          code: "KUBERNETES_API_UNAVAILABLE",
+          host: "127.0.0.1",
+          port,
+        },
+      ],
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Kubernetes preflight keeps TLS and HTTP failures distinct from an unreachable server", async () => {
+  const trust = Object.assign(new TypeError("fetch failed"), {
+    cause: Object.assign(new Error("self-signed certificate in certificate chain"), {
+      code: "SELF_SIGNED_CERT_IN_CHAIN",
+    }),
+  });
+  const forbidden = Object.assign(new Error("Forbidden"), { code: 403 });
+  for (const failure of [trust, forbidden]) {
+    const driver = createTestKubernetesComputeDriver("compute-kubernetes-reachable");
+    driver.apiClients = Promise.resolve({
+      server: "https://10.43.0.1:443",
+      version: {
+        async getCode() {
+          throw failure;
+        },
+      },
+    });
+    await assert.rejects(driver.preflight(), (error) => error === failure);
+  }
+});
+
+test("Kubernetes preflight reports a refused connection with the in-cluster endpoint", async () => {
+  const refused = Object.assign(new TypeError("fetch failed"), {
+    cause: Object.assign(new Error("connect ECONNREFUSED 10.43.0.1:443"), {
+      code: "ECONNREFUSED",
+    }),
+  });
+  const driver = createTestKubernetesComputeDriver("compute-kubernetes-refused");
+  driver.apiClients = Promise.resolve({
+    server: "https://10.43.0.1",
+    version: {
+      async getCode() {
+        throw refused;
+      },
+    },
+  });
+  await assert.rejects(driver.preflight(), (error) => {
+    assert.ok(error instanceof KubernetesApiUnavailableError);
+    assert.deepEqual(startupDependencyFailure(error), {
+      code: "KUBERNETES_API_UNAVAILABLE",
+      host: "10.43.0.1",
+      port: 443,
+    });
+    assert.equal(error.cause, refused);
+    return true;
+  });
+});
+
+test("Kubernetes preflight without a recorded endpoint keeps the original failure", async () => {
+  const refused = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+  const driver = createTestKubernetesComputeDriver("compute-kubernetes-no-endpoint");
+  driver.apiClients = Promise.resolve({
+    version: {
+      async getCode() {
+        throw refused;
+      },
+    },
+  });
+  await assert.rejects(driver.preflight(), (error) => error === refused);
+});
+
+// A two-cluster Driver whose execution cluster answers SelfSubjectAccessReviews from
+// `review(attributes)`, for one tenant Namespace. The upgrade helper's preflight
+// Pods call verifyExecutionTenantGrants with each component's own identity.
+function executionDriver(
+  review,
+  listNamespace = async ({ labelSelector }) => {
+    assert.equal(labelSelector, "openclaw.dev/namespace");
+    return {
+      items: [{ metadata: { name: "oce-tenant", labels: { "openclaw.dev/namespace": "ns" } } }],
+    };
+  },
+) {
+  const configured = conformanceKubernetesOptions({
+    gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+  });
+  delete configured.network.gatewayClients;
+  configured.gatewayRouting = {
+    hostname: "gateway.example.test",
+    gatewayName: "gateway",
+    gatewayNamespace: "system",
+    envoyNamespace: "envoy",
+  };
+  configured.executionCluster = {
+    authentication: { ...configured.authentication, context: "execution" },
+    harnessRouting: { ...configured.gatewayRouting, hostname: "harness.example.test" },
+    network: {
+      dns: configured.network.dns,
+      harnessEndpointCidrs: ["192.0.2.2/32"],
+      gatewayEndpointCidrs: ["192.0.2.1/32"],
+      pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+    },
+  };
+  const driver = createKubernetesComputeDriver(configured);
+  const reviews = [];
+  driver.executionApiClients = Promise.resolve({
+    core: { listNamespace },
+    authorization: {
+      async createSelfSubjectAccessReview({ body }) {
+        const attributes = body.spec.resourceAttributes;
+        reviews.push(attributes);
+        return { status: review(attributes) };
+      },
+    },
+  });
+  return { driver, reviews };
+}
+
+const ruleName = ({ verb, resource, subresource }) =>
+  `${verb} ${resource}${subresource ? `/${subresource}` : ""}`;
+
+test("execution tenant grant check names the API's missing Pod reads without runtime logs", async () => {
+  // The release-era tenant API role: Deployment lists only.
+  const { driver, reviews } = executionDriver((attributes) => ({
+    allowed: attributes.group === "apps" && ruleName(attributes) === "list deployments",
+  }));
+  await assert.rejects(
+    driver.verifyExecutionTenantGrants("api", { runtimeLogs: false }),
+    (error) =>
+      error.constructor.name === "ConfigurationFailure" &&
+      error.message ===
+        "The execution cluster's tenant api grant in Namespace oce-tenant lacks get pods, " +
+          "list pods, get pods/proxy. Upgrade the openclaw-execution chart before this release.",
+  );
+  // Without runtime logs the check never asks for log or Event reads.
+  assert.deepEqual(reviews.map(ruleName), [
+    "list deployments",
+    "get pods",
+    "list pods",
+    "get pods/proxy",
+  ]);
+});
+
+test("execution tenant grant check reports an unevaluated review as incomplete", async () => {
+  const { driver } = executionDriver(() => ({
+    allowed: false,
+    evaluationError: "webhook authorizer unavailable",
+  }));
+  await assert.rejects(
+    driver.verifyExecutionTenantGrants("worker", { runtimeLogs: true }),
+    (error) =>
+      error.constructor.name !== "ConfigurationFailure" &&
+      error.message ===
+        "The execution cluster tenant grant review failed: could not evaluate get pods in " +
+          "Namespace oce-tenant: webhook authorizer unavailable",
+  );
+});
+
+test("execution tenant grant check reads every Namespace page before any review", async () => {
+  const events = [];
+  const pages = {
+    first: {
+      items: [
+        { metadata: { name: "oce-first", labels: { "openclaw.dev/namespace": "ns_a" } } },
+        // An item without a name is not a Namespace to review.
+        { metadata: { labels: { "openclaw.dev/namespace": "ns_unnamed" } } },
+      ],
+      metadata: { _continue: "page-2" },
+    },
+    "page-2": {
+      items: [{ metadata: { name: "oce-second", labels: { "openclaw.dev/namespace": "ns_b" } } }],
+      metadata: {},
+    },
+  };
+  const { driver } = executionDriver(
+    (attributes) => {
+      events.push(`review ${attributes.namespace} ${ruleName(attributes)}`);
+      // oce-first holds the current worker grant; oce-second only the older Pod read.
+      return {
+        allowed: attributes.namespace === "oce-first" || ruleName(attributes) === "get pods",
+      };
+    },
+    async (request) => {
+      events.push(`list ${request._continue ?? "first"}`);
+      assert.equal(request.limit, 100);
+      if (events.filter((event) => event.startsWith("list")).length > 2) {
+        throw new Error("the Namespace list did not advance");
+      }
+      return pages[request._continue ?? "first"];
+    },
+  );
+  await assert.rejects(
+    driver.verifyExecutionTenantGrants("worker", { runtimeLogs: true }),
+    (error) =>
+      error.constructor.name === "ConfigurationFailure" &&
+      error.message ===
+        "The execution cluster's tenant worker grant in Namespace oce-second lacks patch pods. " +
+          "Upgrade the openclaw-execution chart before this release.",
+  );
+  assert.deepEqual(events, [
+    "list first",
+    "list page-2",
+    "review oce-first get pods",
+    "review oce-first patch pods",
+    "review oce-second get pods",
+    "review oce-second patch pods",
+  ]);
+});
+
+test("execution tenant grant check treats a review without a decision as missing", async () => {
+  // Only an explicit `allowed: true` grants; an empty status is not an allowance.
+  const { driver, reviews } = executionDriver((attributes) =>
+    ruleName(attributes) === "get pods" ? { allowed: true } : {},
+  );
+  await assert.rejects(
+    driver.verifyExecutionTenantGrants("worker", { runtimeLogs: false }),
+    (error) =>
+      error.constructor.name === "ConfigurationFailure" &&
+      error.message ===
+        "The execution cluster's tenant worker grant in Namespace oce-tenant lacks patch pods. " +
+          "Upgrade the openclaw-execution chart before this release.",
+  );
+  assert.deepEqual(reviews.map(ruleName), ["get pods", "patch pods"]);
+});
+
+test("execution tenant grant check reports an invalid Namespace list as incomplete", async () => {
+  const { driver, reviews } = executionDriver(
+    () => ({ allowed: true }),
+    async () => ({ items: null }),
+  );
+  await assert.rejects(
+    driver.verifyExecutionTenantGrants("api", { runtimeLogs: true }),
+    (error) =>
+      error.constructor === Error &&
+      error.cause?.message === "the Namespace list returned invalid data." &&
+      error.message ===
+        "The execution cluster tenant grant review failed: the Namespace list returned invalid data.",
+  );
+  assert.deepEqual(reviews, []);
 });

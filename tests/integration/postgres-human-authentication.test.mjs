@@ -11,11 +11,7 @@ import {
   createPostgresControllerAuth,
 } from "../../apps/controller/src/auth/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
-const requiresPostgres = {
-  skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
-};
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 function sessionRecord(userId) {
   const createdAt = new Date();
@@ -89,13 +85,16 @@ test(
     const person = await auth.createAccount({ email: `person-${suffix}@example.test`, password });
     const seed = auth.principalSeed(person, { roleId });
     await state.appendNativeIAMPrincipal(seed);
-    const persistence = new PostgresHumanAuthentication(state, installation.id, issuer);
+    const providerId = `external-${suffix}`;
+    // The external provider instance this suite attaches is the configured one.
+    const configured = { externalProviderIds: [providerId] };
+    const persistence = new PostgresHumanAuthentication(state, installation.id, issuer, configured);
     const peer = new PostgresHumanAuthentication(
       new PostgresPlatformState(pool),
       installation.id,
       issuer,
+      configured,
     );
-    const providerId = `external-${suffix}`;
     const subject = "immutable-subject";
     const legacySession = sessionRecord(person.id);
     await pool.query(
@@ -246,7 +245,7 @@ test(
           /designation cannot be changed/,
         );
         await assert.rejects(changeAccount(recoveryUser.id, "disable"), {
-          name: "ResourceConflictError",
+          name: "ResourceStateConflictError",
           message: /recovery account cannot be disabled/,
         });
         await assert.rejects(pool.query('DELETE FROM occ."user" WHERE id=$1', [recoveryUser.id]), {
@@ -297,7 +296,11 @@ test(
       // The unguarded composition is what a pre-activation image runs: plain
       // Better Auth sessions over the same database, with no binding rows.
       const before = await sessionCount(person.id);
-      await assert.rejects(auth.auth.api.signInEmail({ body: { email: person.email, password } }));
+      // The session insert reaches the database fence, which Drizzle wraps.
+      await assert.rejects(
+        auth.auth.api.signInEmail({ body: { email: person.email, password } }),
+        (error) => fenceMessage.test(error.cause?.message),
+      );
       assert.equal(await sessionCount(person.id), before);
     });
 
@@ -345,6 +348,10 @@ test(
             installation.id,
             issuer,
           ).provisionPasswordAccount(failing, failingSeed),
+          {
+            name: "DependencyUnavailableError",
+            message: "The platform persistence repository is unavailable.",
+          },
         );
         assert.deepEqual(await rowCounts(failing.id, failingSeed.principal.id), {
           users: 0,
@@ -410,6 +417,11 @@ test(
           target.version,
         );
         assert.equal(await peer.currentSession(oldSession.token), undefined);
+        // Attach deletes the account's sessions; the version bump alone leaves stale rows.
+        assert.equal(
+          (await pool.query("SELECT 1 FROM occ.session WHERE id = $1", [oldSession.id])).rowCount,
+          0,
+        );
         await assert.rejects(
           persistence.issueSession(passwordProof, sessionRecord(person.id)),
           /no longer current/,
@@ -424,7 +436,7 @@ test(
         );
         await assert.rejects(
           peer.attachExternal(person.id, providerId, subject, admin, target.version),
-          { name: "ResourceConflictError" },
+          { name: "ResourceStateConflictError" },
         );
         assert.equal(attachment.created, true);
         assert.deepEqual(
@@ -470,6 +482,24 @@ test(
         assert.equal(await persistence.snapshotExternal(providerId, "missing"), undefined);
       },
     );
+
+    await context.test("an external subject resolves only under its own provider", async () => {
+      // attachExternal and snapshotExternal do not consult the configured provider list;
+      // only issuance and session reads do, so an unconfigured second provider is enough here.
+      const secondProvider = `second-${suffix}`;
+      await persistence.attachExternal(
+        early.id,
+        secondProvider,
+        subject,
+        admin,
+        (await persistence.readAccount(early.id, admin)).version,
+      );
+      assert.equal((await persistence.snapshotExternal(providerId, subject))?.user.id, person.id);
+      assert.equal(
+        (await persistence.snapshotExternal(secondProvider, subject))?.user.id,
+        early.id,
+      );
+    });
 
     await context.test(
       "attempts require the exact browser and destination and are consumed once across controllers",
@@ -644,6 +674,11 @@ test(
         fresh.proof.methodId,
         fresh.proof.passwordHash,
       ]);
+      // The original hash is back, but under a new method version: the proof stays stale.
+      await assert.rejects(
+        persistence.issueSession(fresh.proof, sessionRecord(person.id)),
+        /no longer current/,
+      );
     });
 
     await context.test("the shared user lock serializes issuance before revocation", async () => {
@@ -662,6 +697,7 @@ test(
         new PostgresPlatformState(heldPool),
         installation.id,
         issuer,
+        configured,
       );
       const record = sessionRecord(person.id);
       const issuing = held.issueSession(proof, record);
@@ -677,6 +713,7 @@ test(
           new PostgresPlatformState(boundedPool),
           installation.id,
           issuer,
+          configured,
         );
         // A lock timeout (55P03) is retryable contention, not an internal error.
         await assert.rejects(changeAccount(person.id, "revoke", bounded), {
@@ -735,6 +772,7 @@ test(
             ),
             installation.id,
             issuer,
+            configured,
           );
           const contending = new PostgresHumanAuthentication(
             new PostgresPlatformState(
@@ -747,6 +785,7 @@ test(
             ),
             installation.id,
             issuer,
+            configured,
           );
           const invalidating =
             invalidation === "logout"
@@ -789,6 +828,7 @@ test(
           new PostgresPlatformState(rejectAuditPool),
           installation.id,
           issuer,
+          configured,
         );
         await assert.rejects(rejecting.changeAccount(person.id, "revoke", admin, target.version), {
           name: "ScopeViolationError",
@@ -807,6 +847,7 @@ test(
           new PostgresPlatformState(lostAckPool),
           installation.id,
           issuer,
+          configured,
         );
         await assert.rejects(uncertain.changeAccount(person.id, "revoke", admin, target.version), {
           name: "PostgresCommitOutcomeUnknownError",
@@ -815,7 +856,7 @@ test(
         // This is current state, not a receipt attributing the effect to a request.
         assert.equal((await peer.readAccount(person.id, admin)).version, target.version + 1);
         await assert.rejects(peer.changeAccount(person.id, "revoke", admin, target.version), {
-          name: "ResourceConflictError",
+          name: "ResourceStateConflictError",
         });
       },
     );
@@ -828,7 +869,15 @@ test(
         await changeAccount(person.id, "disable", peer);
         assert.equal(await persistence.currentSession(record.token), undefined);
         assert.equal(await persistence.snapshotPassword(person.email), undefined);
-        assert.equal(await persistence.snapshotExternal(providerId, subject), undefined);
+        // The attached identity learns its account is disabled; it still gets no proof.
+        assert.deepEqual(await persistence.snapshotExternal(providerId, subject), {
+          disabled: true,
+          userId: person.id,
+        });
+        assert.equal(
+          await persistence.snapshotExternal(providerId, "unattached-subject"),
+          undefined,
+        );
         await assert.rejects(
           persistence.issueSession(proof, sessionRecord(person.id)),
           /no longer current/,
@@ -837,7 +886,7 @@ test(
         const disabledTarget = await persistence.readAccount(person.id, admin);
         await assert.rejects(
           persistence.attachExternal(person.id, providerId, "99", admin, disabledTarget.version),
-          { name: "ResourceConflictError", message: /account is disabled/ },
+          { name: "ResourceStateConflictError", message: /account is disabled/ },
         );
         assert.deepEqual(await persistence.readAccount(person.id, admin), disabledTarget);
         const audits = await state.transact((unit) => unit.audit.list());
@@ -924,15 +973,15 @@ test(
             admin,
             disabled.version,
           ),
-          { name: "ResourceConflictError", message: /account is disabled/ },
+          { name: "ResourceStateConflictError", message: /account is disabled/ },
         );
         await assert.rejects(
           persistence.replaceRecovery(successor.id, successorPrincipal, successor.id, admin, 1),
-          { name: "ResourceConflictError" },
+          { name: "ResourceStateConflictError" },
         );
         await assert.rejects(
           persistence.replaceRecovery(successor.id, successorPrincipal, recoveryUser.id, admin, 2),
-          { name: "ResourceConflictError" },
+          { name: "ResourceStateConflictError" },
         );
         await assert.rejects(
           persistence.replaceRecovery(successor.id, seed.principal.id, recoveryUser.id, admin, 1),
@@ -959,7 +1008,7 @@ test(
         assert.equal(replaced[0].value.email, `successor-${suffix}@example.test`);
         assert.equal(
           results.find((result) => result.status === "rejected").reason.name,
-          "ResourceConflictError",
+          "ResourceStateConflictError",
         );
         const designations = (
           await pool.query(
@@ -1009,7 +1058,7 @@ test(
         );
         await signInAdmin();
         await assert.rejects(changeAccount(successor.id, "disable"), {
-          name: "ResourceConflictError",
+          name: "ResourceStateConflictError",
           message: /recovery account cannot be disabled/,
         });
         // The application role cannot delete the designation, only move it.
@@ -1062,12 +1111,84 @@ test(
       assert.equal(enabled.version, disabled.version + 1);
       assert.ok(await persistence.snapshotPassword(person.email));
       await assert.rejects(peer.changeAccount(person.id, "enable", admin, enabled.version), {
-        name: "ResourceConflictError",
+        name: "ResourceStateConflictError",
       });
       await assert.rejects(peer.changeAccount(person.id, "enable", admin, disabled.version), {
-        name: "ResourceConflictError",
+        name: "ResourceStateConflictError",
       });
     });
+
+    await context.test(
+      "an external session authenticates only while its provider instance is configured",
+      async () => {
+        const external = await persistence.snapshotExternal(providerId, subject);
+        const password = await persistence.snapshotPassword(person.email);
+        const externalSession = await persistence.issueSession(
+          external.proof,
+          sessionRecord(person.id),
+        );
+        const passwordSession = await persistence.issueSession(
+          password.proof,
+          sessionRecord(person.id),
+        );
+        const elsewhere = new PostgresHumanAuthentication(state, installation.id, issuer, {
+          externalProviderIds: [`other-${suffix}`],
+        });
+        const passwordOnly = new PostgresHumanAuthentication(state, installation.id, issuer);
+        assert.throws(
+          () =>
+            new PostgresHumanAuthentication(state, installation.id, issuer, {
+              externalProviderIds: ["credential"],
+            }),
+          { name: "ScopeViolationError" },
+        );
+        for (const store of [elsewhere, passwordOnly]) {
+          await assert.rejects(
+            store.issueSession(external.proof, sessionRecord(person.id)),
+            /no longer current/,
+          );
+          assert.equal((await store.currentSession(passwordSession.token)).user.id, person.id);
+        }
+        // The in-transaction actor re-check follows the same configuration.
+        const actor = {
+          userId: person.id,
+          sessionId: externalSession.id,
+          principalId: external.proof.principalId,
+        };
+        await assert.rejects(elsewhere.readAccount(person.id, actor), {
+          name: "AuthorizationDeniedError",
+        });
+        assert.equal((await persistence.readAccount(person.id, actor)).userId, person.id);
+        assert.equal((await peer.currentSession(externalSession.token)).user.id, person.id);
+
+        const endings = async () =>
+          (await state.transact((unit) => unit.audit.list())).filter(
+            (event) =>
+              event.action === "authentication.session.end" &&
+              event.details.methodId === external.proof.methodId,
+          );
+        assert.deepEqual(await endings(), []);
+        assert.equal(await elsewhere.currentSession(externalSession.token), undefined);
+        assert.equal(await passwordOnly.currentSession(externalSession.token), undefined);
+        // Ended, not just hidden: the configured store no longer sees it either.
+        assert.equal(await persistence.currentSession(externalSession.token), undefined);
+        assert.equal(
+          (await pool.query("SELECT 1 FROM occ.session WHERE id = $1", [externalSession.id]))
+            .rowCount,
+          0,
+        );
+        const [ending, ...extra] = await endings();
+        assert.deepEqual(extra, []);
+        assert.equal(ending.actorId, external.proof.principalId);
+        assert.deepEqual(ending.details, {
+          userId: person.id,
+          methodId: external.proof.methodId,
+          providerId,
+          reason: "PROVIDER_NOT_CONFIGURED",
+        });
+        assert.equal((await persistence.currentSession(passwordSession.token)).user.id, person.id);
+      },
+    );
 
     await context.test(
       "detach removes only an external identity and invalidates its sessions",
@@ -1085,12 +1206,12 @@ test(
         ]) {
           const version = (await persistence.readAccount(userId, admin)).version;
           await assert.rejects(persistence.detachExternal(userId, methodId, admin, version), {
-            name: "ResourceConflictError",
+            name: "ResourceStateConflictError",
           });
         }
         await assert.rejects(
           persistence.detachExternal(person.id, external.proof.methodId, admin, target.version - 1),
-          { name: "ResourceConflictError" },
+          { name: "ResourceStateConflictError" },
         );
         assert.deepEqual(
           await peer.detachExternal(person.id, external.proof.methodId, admin, target.version),

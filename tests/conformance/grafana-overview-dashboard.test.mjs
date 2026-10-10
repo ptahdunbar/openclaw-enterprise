@@ -4,7 +4,6 @@ import test from "node:test";
 
 const demoPath = "deploy/helm/openclaw-observability-demo/files/overview-dashboard.json";
 const developmentPath = "deploy/metrics/development/grafana/overview-dashboard.json";
-const logsEntry = "\n- [Operational logs](./d/occ-logs) — filtered OCC and runtime events.";
 
 async function dashboard(path) {
   return JSON.parse(await readFile(path, "utf8"));
@@ -16,7 +15,8 @@ function markdownLinks(content) {
 
 test("overview dashboard links resolve under a Grafana sub-path", async () => {
   for (const path of [demoPath, developmentPath]) {
-    const links = markdownLinks((await dashboard(path)).panels[0].options.content);
+    const overview = await dashboard(path);
+    const links = overview.panels.flatMap((panel) => markdownLinks(panel.options?.content ?? ""));
     assert.ok(links.length > 0, path);
     for (const link of links) {
       // Grafana pages carry <base href="{app sub-URL}/">, so ./d/... stays under
@@ -27,15 +27,13 @@ test("overview dashboard links resolve under a Grafana sub-path", async () => {
   }
 });
 
-test("development overview is the demo overview without the logs view", async () => {
-  // Both copies provision the same uid into separate Grafana instances. The
-  // development stack has no Loki, so its copy omits only the logs entry.
-  const demo = await dashboard(demoPath);
-  const development = await dashboard(developmentPath);
-  assert.ok(demo.panels[0].options.content.includes(logsEntry));
-  const expected = structuredClone(demo);
-  expected.description = "Open the OCC metrics view.";
-  expected.panels[0].gridPos.h = 5;
-  expected.panels[0].options.content = demo.panels[0].options.content.replace(logsEntry, "");
-  assert.deepEqual(development, expected);
+test("overview dashboards expose metrics and reserve logs for the demo", async () => {
+  // Both environments use the same dashboard route; development has no Loki.
+  for (const path of [demoPath, developmentPath]) {
+    const overview = await dashboard(path);
+    assert.equal(overview.uid, "occ-observability", path);
+    const links = overview.panels.flatMap((panel) => markdownLinks(panel.options?.content ?? ""));
+    assert.ok(links.includes("./d/occ-development"), path);
+    assert.equal(links.includes("./d/occ-logs"), path === demoPath, path);
+  }
 });

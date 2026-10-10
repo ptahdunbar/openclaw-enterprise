@@ -1,9 +1,7 @@
+import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
-import devdayPreset from "/console/devday-preset.mjs";
-import devdayPartnersPreset from "/console/devday-partners-preset.mjs";
-import devdayQaPreset from "/console/devday-qa-preset.mjs";
-import devdayOncallPreset from "/console/devday-oncall-preset.mjs";
+import swePreset from "/console/swe-preset.mjs";
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
@@ -34,7 +32,12 @@ function slackChannels(scenario) {
 function configurationValues(scenario) {
   const values = {
     gateway: { mode: "local" },
-    agents: { defaults: { model: "codex/gpt-4.1" } },
+    agents: {
+      defaults: {
+        model: "codex/gpt-4.1",
+        models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
+      },
+    },
     channels: {},
   };
   if (scenario.gatewayPassword) {
@@ -64,6 +67,38 @@ function configurationValues(scenario) {
 
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
+function candidateDeploymentError(scenario, checkedAt) {
+  if (scenario.candidateModelProbeCause) {
+    return {
+      code: "RUNTIME_MODEL_PROBE_FAILED",
+      message: "Deployment runtime startup model check failed.",
+      data: {
+        runtimeFailure: {
+          component: "gateway",
+          check: "model-probe",
+          code: "MODEL_PROBE_FAILED",
+          checkedAt,
+          cause: scenario.candidateModelProbeCause,
+        },
+      },
+    };
+  }
+  if (scenario.candidateSelected) {
+    return {
+      code: "REVISION_FINALIZATION_INCOMPLETE",
+      message: "Deployment reconciliation failed.",
+    };
+  }
+  return {
+    code: "CONVERGENCE_DEADLINE_EXCEEDED",
+    message: "Deployment convergence deadline exceeded.",
+    data: {
+      timeoutMs: 60000,
+      runtimeFailure: { component: "harness", check: "readiness", code: "TIMEOUT", checkedAt },
+    },
+  };
+}
+
 export function installFixture(scenario, evidence) {
   const rules = structuredClone(scenario.rules ?? []);
   let signedIn = !scenario.signedOut;
@@ -85,6 +120,7 @@ export function installFixture(scenario, evidence) {
   const deployments = new Map();
   const provisioning = new Map();
   const credentials = new Map();
+  const deviceLogins = new Map();
   const files = new Map();
   const secrets = new Map();
   const stagedWorkspaceFiles = new Map();
@@ -130,6 +166,7 @@ export function installFixture(scenario, evidence) {
     {
       id: "sa_demo",
       name: "Research service",
+      credential: { kind: "access_token" },
       backendId: "chatgpt-demo",
       status: "active",
       createdAt,
@@ -167,10 +204,12 @@ export function installFixture(scenario, evidence) {
       : scenario.auth === "runtime"
         ? { method: "runtime" }
         : scenario.auth === "service"
-          ? { method: "chatgpt_service_account", serviceAccountId: "sa_demo" }
+          ? { method: "codex_pat", source: { kind: "service_account", namespaceId, id: "sa_demo" } }
           : scenario.auth === "codex_pat"
             ? { method: "codex_pat", source: secretRef("sec_demo_service_account") }
-            : auth;
+            : scenario.auth === "oauth"
+              ? { method: "oauth", source: secretRef("sec_demo_oauth_deployed") }
+              : auth;
   let selectedRevisionId = null;
   if (scenario.candidateDeploymentStatus) {
     selectedRevisionId =
@@ -207,6 +246,11 @@ export function installFixture(scenario, evidence) {
   credentials.set(agent.id, { transportConfigured: scenario.transport !== false });
   function snapshot(owner, id, revision) {
     const configuration = configs.get(owner.configurationId);
+    const model = configuration.values.agents?.defaults?.model;
+    const primaryModel = typeof model === "string" ? model : model?.primary;
+    const harnessId =
+      configuration.values.agents?.defaults?.models?.[primaryModel]?.agentRuntime?.id ??
+      (primaryModel?.startsWith("codex/") ? "codex" : "openclaw");
     return {
       id,
       namespaceId,
@@ -231,7 +275,7 @@ export function installFixture(scenario, evidence) {
             },
           }
         : {}),
-      harness: { id: "codex", version: "demo", mode: owner.executionMode },
+      harness: { id: harnessId, version: "demo", mode: owner.executionMode },
       compute: { id: "kubernetes-demo", implementation: "kubernetes" },
       servicePrincipalId: owner.servicePrincipalId,
       ...(owner.repositoryBindings?.length
@@ -291,24 +335,7 @@ export function installFixture(scenario, evidence) {
           : null,
         error:
           scenario.candidateDeploymentStatus === "failed"
-            ? scenario.candidateSelected
-              ? {
-                  code: "REVISION_FINALIZATION_INCOMPLETE",
-                  message: "Deployment reconciliation failed.",
-                }
-              : {
-                  code: "CONVERGENCE_DEADLINE_EXCEEDED",
-                  message: "Deployment convergence deadline exceeded.",
-                  data: {
-                    timeoutMs: 60000,
-                    runtimeFailure: {
-                      component: "harness",
-                      check: "readiness",
-                      code: "TIMEOUT",
-                      checkedAt: candidate.createdAt,
-                    },
-                  },
-                }
+            ? candidateDeploymentError(scenario, candidate.createdAt)
             : null,
         warnings: scenario.candidateDeploymentWarnings ?? [],
       });
@@ -349,7 +376,7 @@ export function installFixture(scenario, evidence) {
     });
   }
   const preset = {
-    id: scenario.devdayPreset ? "pre_devday_codex" : "pre_00000000-0000-4000-8000-000000000001",
+    id: scenario.swePreset ? "pre_swe_codex" : "pre_00000000-0000-4000-8000-000000000001",
     namespaceId,
     name: "Research assistant",
     template: {
@@ -371,29 +398,79 @@ export function installFixture(scenario, evidence) {
       },
     },
   };
-  if (scenario.standardCodexPreset || scenario.standardOpenclawPreset || scenario.devdayPreset) {
+  if (scenario.standardCodexPreset || scenario.standardOpenclawPreset || scenario.swePreset) {
     Object.assign(
       preset,
       structuredClone(
-        scenario.devdayPreset
-          ? devdayPreset
+        scenario.swePreset
+          ? swePreset
           : scenario.standardOpenclawPreset
             ? standardOpenclawPreset
             : standardCodexPreset,
       ),
     );
   }
+  if (scenario.modelFallbackSelection) {
+    const ids = ["primary-model", "fallback-one", "fallback-two"];
+    preset.name = "Models with ordered fallbacks";
+    delete preset.template.variables;
+    preset.template.agent.executionMode = "embedded";
+    preset.template.agent.name = "Model selection example";
+    preset.template.configuration.values = {
+      agents: {
+        defaults: {
+          model: {
+            primary: `openai/${ids[0]}`,
+            fallbacks: ids.slice(1).map((id) => `openai/${id}`),
+          },
+          models: Object.fromEntries(
+            ids.map((id) => [
+              `openai/${id}`,
+              {
+                agentRuntime: { id: "openclaw" },
+                alias: `Saved ${id}`,
+                params: { temperature: 0.3 },
+              },
+            ]),
+          ),
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://models.example.test/v1",
+            api: "openai-responses",
+            models: ids.map((id) => ({
+              id,
+              name: id,
+              contextWindow: 128000,
+              maxTokens: 8192,
+              reasoning: true,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            })),
+          },
+        },
+      },
+    };
+  }
+  if (scenario.presetAgent) {
+    Object.assign(preset.template.agent, structuredClone(scenario.presetAgent));
+  }
   if (scenario.presetWorkspaceFiles) {
     preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }
-  const presets = [preset];
-  if (scenario.devdayPreset) {
+  const presets = [
+    preset,
+    {
+      ...structuredClone(defaultCodexPreset),
+      id: "pre_default_codex",
+      namespaceId,
+    },
+  ];
+  if (scenario.swePreset) {
     for (const [name, definition] of [
       ["standard-codex", standardCodexPreset],
       ["standard-openclaw", standardOpenclawPreset],
-      ["devday-partners", devdayPartnersPreset],
-      ["devday-qa", devdayQaPreset],
-      ["devday-oncall", devdayOncallPreset],
     ]) {
       presets.push({
         ...structuredClone(definition),
@@ -472,6 +549,7 @@ export function installFixture(scenario, evidence) {
       return response({
         github: scenario.githubEnabled === true,
         google: scenario.googleEnabled === true,
+        password: scenario.passwordRecoveryOnly !== true,
         sessionBinding: scenario.githubEnabled === true || scenario.googleEnabled === true,
       });
     }
@@ -510,6 +588,9 @@ export function installFixture(scenario, evidence) {
           ...(scenario.unsupportedProvisioning === true
             ? {}
             : { agentProvisioning: { executionModes: ["dedicated"] } }),
+          ...(scenario.nativeWorkerSupport
+            ? { nativeWorkers: { support: scenario.nativeWorkerSupport } }
+            : {}),
           ...(scenario.pluginCapabilities ? { pluginPolicies: scenario.pluginCapabilities } : {}),
           ...(scenario.pluginDiscoveryCredential
             ? { pluginDiscovery: { credential: scenario.pluginDiscoveryCredential } }
@@ -534,8 +615,46 @@ export function installFixture(scenario, evidence) {
       if (ns !== namespaceId) {
         return response([]);
       }
+      const deviceLogin = resource.match(
+        /^agents(?:\/[^/]+)?\/device-authorizations(?:\/([^/]+)(\/poll)?)?$/,
+      );
+      if (deviceLogin) {
+        const [, id, poll] = deviceLogin;
+        if (!id && method === "POST") {
+          const source = secretRef(nextId("sec"));
+          const login = {
+            source,
+            status: "pending",
+            verificationUrl: "https://auth.openai.com/codex/device",
+            userCode: "DEMO-1234",
+            expiresAt: new Date(Date.now() + (scenario.oauthExpired ? -1 : 600_000)).toISOString(),
+            intervalSeconds: 1,
+          };
+          deviceLogins.set(source.id, login);
+          secrets.set(
+            source.id,
+            secretMetadata(source.id, "Codex OAuth login (Experimental, simulated)"),
+          );
+          return response(login);
+        }
+        const login = deviceLogins.get(id);
+        if (!login) {
+          return error(404);
+        }
+        if (poll && method === "POST") {
+          if (!scenario.oauthPending) {
+            login.status = "ready";
+          }
+          return response(login);
+        }
+        if (!poll && method === "DELETE") {
+          deviceLogins.delete(id);
+          secrets.delete(id);
+          return new Response(null, { status: 204 });
+        }
+      }
       if (resource === "service-accounts" && method === "GET") {
-        return response(accounts);
+        return response(scenario.serviceAccountsEmpty ? [] : accounts);
       }
       if (
         (resource === "agents/repository-options" ||
@@ -936,6 +1055,160 @@ export function installFixture(scenario, evidence) {
           return revisions.has(suffix.split("/")[2])
             ? response(revisions.get(suffix.split("/")[2]))
             : error(404);
+        }
+        if (suffix.startsWith("/deployments/") && suffix.endsWith("/runtime") && method === "GET") {
+          const revisionId = suffix.split("/")[2];
+          if (!revisions.has(revisionId)) {
+            return error(404);
+          }
+          const startup = scenario.runtimePod === "startupWarnings";
+          const pod = {
+            role: "gateway",
+            cluster: "control",
+            name: "gateway-7d9f8c-x2k4q",
+            uid: "0f3b6c1e-7d52-4f4b-9a2e-5c6d7e8f9a01",
+            phase: "Running",
+            ready: true,
+            createdAt: "2026-09-27T10:00:00.000Z",
+            containers: [
+              {
+                name: "gateway",
+                state: "running",
+                reason: null,
+                ready: true,
+                restartCount: startup ? 0 : 1,
+                startedAt: "2026-09-27T11:40:00.000Z",
+                lastTermination: startup
+                  ? null
+                  : {
+                      reason: "OOMKilled",
+                      exitCode: 137,
+                      finishedAt: "2026-09-27T11:39:58.000Z",
+                    },
+              },
+            ],
+            // A healthy first deploy: readiness probes failed while the Gateway started.
+            events: startup
+              ? [
+                  {
+                    type: "Warning",
+                    container: "gateway",
+                    reason: "Unhealthy",
+                    message: "Readiness probe failed: Gateway /readyz unavailable: ECONNREFUSED",
+                    count: 8,
+                    lastObservedAt: "2026-09-27T11:40:20.000Z",
+                  },
+                ]
+              : [
+                  {
+                    type: "Warning",
+                    reason: "BackOff",
+                    message: "Back-off restarting failed container gateway",
+                    count: 2,
+                    lastObservedAt: "2026-09-27T11:39:59.000Z",
+                  },
+                ],
+          };
+          return response({
+            revisionId,
+            observedAt: "2026-09-27T12:00:00.000Z",
+            pods: [pod],
+            sources: [
+              {
+                id: "gateway",
+                kind: "container",
+                pods: [{ name: pod.name, uid: pod.uid, container: "gateway", restartCount: 1 }],
+                available: true,
+                retention:
+                  "Kubernetes keeps only the current and the previous instance of each container; older output and output from deleted Pods is gone.",
+              },
+            ],
+          });
+        }
+        if (
+          suffix.startsWith("/deployments/") &&
+          suffix.endsWith("/runtime/logs") &&
+          method === "GET"
+        ) {
+          const revisionId = suffix.split("/")[2];
+          if (url.searchParams.get("download") === "true") {
+            // Downloads are a text/plain attachment, not a JSON envelope.
+            if (scenario.runtimeLogDownloadNoPod) {
+              return new Response(
+                `# agent=${id} revision=${revisionId} source=${url.searchParams.get("source")} observedAt=2026-09-27T11:41:10.000Z withheld=0\n`,
+                {
+                  status: 200,
+                  headers: {
+                    "content-type": "text/plain; charset=utf-8",
+                    "content-disposition": `attachment; filename="${id}-${revisionId}-${url.searchParams.get("source")}-no-pod.log"`,
+                  },
+                },
+              );
+            }
+            return new Response(
+              [
+                "2026-09-27T11:40:01.120Z info wrapper runtime.startup_phase container=gateway phase=config outcome=ok ms=12",
+                "2026-09-27T11:40:03.400Z info openclaw [gateway] gateway listening",
+                "2026-09-27T11:41:10.000Z warn openclaw [channels/slack] slack socket reconnect with token=[redacted:key-value]",
+                "",
+              ].join("\n"),
+              {
+                status: 200,
+                headers: {
+                  "content-type": "text/plain; charset=utf-8",
+                  "content-disposition": `attachment; filename="${revisionId}-gateway.log"`,
+                },
+              },
+            );
+          }
+          const stream = {
+            source: "gateway",
+            pod: "gateway-7d9f8c-x2k4q",
+            podUid: "0f3b6c1e-7d52-4f4b-9a2e-5c6d7e8f9a01",
+            container: "gateway",
+            restartCount: 1,
+          };
+          const line = (time, kind, level, message, extra = {}) => ({
+            type: "line",
+            time,
+            stream,
+            contentClass: "operational",
+            kind,
+            level,
+            message,
+            ...extra,
+          });
+          return response({
+            revisionId,
+            source: "gateway",
+            stream,
+            observedAt: "2026-09-27T12:00:00.000Z",
+            records: [
+              line("2026-09-27T11:40:01.120Z", "wrapper", "info", "runtime.startup_phase", {
+                fields: { container: "gateway", phase: "config", outcome: "ok", ms: 12 },
+              }),
+              line("2026-09-27T11:40:03.400Z", "openclaw", "info", "gateway listening", {
+                subsystem: "gateway",
+              }),
+              {
+                type: "withheld",
+                time: "2026-09-27T11:40:04.000Z",
+                stream,
+                count: 3,
+                reason: "unrecognised_structured",
+              },
+              line(
+                "2026-09-27T11:41:10.000Z",
+                "openclaw",
+                "warn",
+                "slack socket reconnect with token=[redacted:key-value]",
+                { subsystem: "channels/slack" },
+              ),
+            ],
+            withheld: 3,
+            truncated: false,
+            cursor: `v1.${"a".repeat(40)}.${"b".repeat(43)}`,
+          });
         }
         if (
           suffix.startsWith("/deployments/") &&

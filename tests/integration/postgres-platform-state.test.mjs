@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { Agent, request as httpRequest } from "node:http";
 import test from "node:test";
 import {
   adminEmail,
+  adminPassword,
   createConfiguredAgent,
   createDurableController,
   databaseUrl,
@@ -578,6 +585,31 @@ test(
       });
     });
 
+    // The Namespace-unique name constraint surfaces as an actionable duplicate-name conflict.
+    const duplicateAgentId = `agt_${randomUUID()}`;
+    await assert.rejects(
+      state.transact((unit) =>
+        unit.agents.createAgent({
+          id: duplicateAgentId,
+          namespaceId,
+          name: "Provisioning success",
+          configurationId,
+          backendId: null,
+          harnessAuth: { method: "runtime" },
+          executionMode: "embedded",
+          servicePrincipalId: `service-agent-${duplicateAgentId}`,
+          desiredRuntimeState: "stopped",
+          status: "active",
+          createdAt,
+        }),
+      ),
+      {
+        name: "ResourceStateConflictError",
+        message:
+          "An Agent with this name already exists in this Namespace. Choose a different name.",
+      },
+    );
+
     const queue = new PostgresWorkQueue(pool);
     await queue.enqueue({
       kind: "provisioning",
@@ -831,7 +863,14 @@ test(
         "agents_harness_auth_secret_owner",
       ],
       [
-        { method: "chatgpt_service_account", serviceAccountId: fixture.serviceAccount.id },
+        {
+          method: "codex_pat",
+          source: {
+            kind: "service_account",
+            namespaceId: fixture.namespace.id,
+            id: fixture.serviceAccount.id,
+          },
+        },
         "23503",
         "agents_harness_auth_service_account_owner",
       ],
@@ -1757,6 +1796,21 @@ test(
         createdAt: new Date().toISOString(),
       }),
     );
+    // Preserve a normal queued deployment record for the healthy snapshot, so
+    // CLI status enrichment remains observable without executing a workload.
+    const actor = (await state.loadNativeIAMState()).identities.find(
+      (identity) => identity.kind === "principal",
+    );
+    assert.ok(actor);
+    await state.transact((unit) =>
+      unit.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        namespaceId,
+        resourceId: revision.id,
+        actorId: actor.id,
+      }),
+    );
     const healthyRevision = await request(api, "GET", `${revisionPath}/${revision.id}`);
     assert.equal(healthyRevision.status, 200);
 
@@ -1815,6 +1869,76 @@ test(
     const invalidDetail = await request(api, "GET", `${revisionPath}/${malformedRevisionId}`);
     assert.equal(invalidDetail.status, 200);
     assert.deepEqual(invalidDetail.data, degradedRevision);
+
+    // The compiled CLI consumes the same supported metadata/error variants over
+    // the shipped API's real HTTP listener. A retired saved enum is not a runtime.
+    const cliDirectory = await mkdtemp(join(tmpdir(), "oce-cli-browsing-"));
+    context.after(() => rm(cliDirectory, { recursive: true, force: true }));
+    const cli = join(cliDirectory, "occ");
+    const execute = promisify(execFile);
+    await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
+    const principal = (await state.loadNativeIAMState()).identities.find(
+      (identity) =>
+        identity.kind === "service_principal" &&
+        identity.namespaceId === undefined &&
+        identity.agentId === undefined,
+    );
+    assert.ok(principal);
+    const key = await request(api, "POST", "/api/auth/service-keys", {
+      servicePrincipalId: principal.id,
+      name: "metadata-browsing-proof",
+      expiresIn: 86400,
+    });
+    assert.equal(key.status, 201);
+    const keyFile = join(cliDirectory, "service-key.json");
+    await writeFile(keyFile, JSON.stringify({ data: key.data }), { mode: 0o600 });
+    const cliArguments = [
+      "--url",
+      api.origin,
+      "--service-key-file",
+      keyFile,
+      "--namespace",
+      namespaceId,
+    ];
+    try {
+      for (const command of [
+        ["agent", "get", agent.id],
+        ["agent", "list"],
+        ["agent", "revisions", agent.id],
+      ]) {
+        const table = await execute(cli, [...cliArguments, ...command]);
+        assert.match(table.stdout, /CONFIGURATION ERROR/u);
+        assert.match(table.stdout, /SAVED_CONFIGURATION_UNREADABLE \(plugins\)/u);
+        const structured = await execute(cli, [...cliArguments, ...command, "--output", "json"]);
+        const decoded = JSON.parse(structured.stdout);
+        const records = Array.isArray(decoded) ? decoded : [decoded];
+        assert.ok(records.some((record) => record.configurationReadError?.code === readError.code));
+        if (command[1] === "revisions") {
+          assert.match(structured.stderr, /Agent saved configuration is unreadable/u);
+          assert.ok(records.every((record) => record.deploymentStatus === null));
+        }
+      }
+      // A readable Agent can still have an unreadable historical snapshot. Keep
+      // its healthy sibling and do not enrich the error variant through strict reads.
+      await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
+        agent.id,
+        JSON.stringify(agent.plugins ?? {}),
+      ]);
+      const history = await execute(cli, [...cliArguments, "agent", "revisions", agent.id]);
+      assert.match(history.stdout, /SAVED_CONFIGURATION_UNREADABLE \(plugins\)/u);
+      assert.ok(history.stdout.includes(revision.id));
+      assert.match(history.stdout, /queued/u);
+      assert.ok(history.stdout.includes(malformedRevisionId));
+    } finally {
+      await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
+        agent.id,
+        JSON.stringify(malformedPlugins),
+      ]);
+      assert.equal(
+        (await request(api, "DELETE", `/api/auth/service-keys/${key.data.id}`)).status,
+        200,
+      );
+    }
 
     // Browsing must not admit partially decoded records to mutation or runtime
     // paths, and a failed edit must not turn unreadable plugin state into {}.
@@ -1880,6 +2004,111 @@ test(
       });
       assert.equal(denied.data, undefined);
     }
+  },
+);
+
+test(
+  "PostgreSQL native admin ignores unreadable older revisions when checking for a successor",
+  requiresPostgres,
+  async (context) => {
+    const { Pool } = await import("pg");
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const api = await startController(context);
+    const { controller, state } = await createDurableController(pool);
+    const actor = await pool.query(
+      `SELECT identity.id
+       FROM occ.iam_identities AS identity
+       JOIN occ."user" AS auth_user ON auth_user.id = identity.subject
+       WHERE auth_user.email = $1`,
+      [adminEmail],
+    );
+    assert.equal(actor.rowCount, 1);
+    const principalId = actor.rows[0].id;
+    const namespace = await request(api, "POST", "/namespaces", {
+      name: `native-admin-successor-${randomUUID()}`,
+    });
+    assert.equal(namespace.status, 201);
+    const namespaceId = namespace.data.id;
+    const { agent, configuration } = await createConfiguredAgent(
+      api,
+      namespaceId,
+      "Native admin successor",
+      undefined,
+      { harnessAuth: { method: "runtime" } },
+    );
+    const plugins = {
+      "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
+    };
+    // A previously accepted approval enum that the current contract no longer decodes.
+    const malformedPlugins = {
+      "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } },
+    };
+    const createRevision = (revision) =>
+      state.transact((unit) =>
+        unit.revisions.createRevision({
+          id: `rev_${randomUUID()}`,
+          namespaceId,
+          agentId: agent.id,
+          revision,
+          backendId: null,
+          configurationId: configuration.id,
+          configurationKind: "agent",
+          configurationGeneration: 1,
+          configuration: configuration.values,
+          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          compute: {
+            id: "compute-local-development",
+            implementation: "deterministic-local-development",
+          },
+          harnessAuth: { method: "runtime" },
+          servicePrincipalId: agent.servicePrincipalId,
+          plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
+          createdAt: new Date().toISOString(),
+        }),
+      );
+    // Revisions are immutable to the application role, so seed unreadable rows as copies.
+    const insertUnreadable = async (template, revision) => {
+      const id = `rev_${randomUUID()}`;
+      await pool.query(
+        `INSERT INTO occ.agent_revisions
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+         SELECT $1, namespace_id, agent_id, $2, backend_id,
+                jsonb_set(admitted_spec, '{plugins,plugins}', $4::jsonb, false), admitted_at
+         FROM occ.agent_revisions WHERE id = $3`,
+        [id, revision, template.id, JSON.stringify(malformedPlugins)],
+      );
+      return id;
+    };
+    const active = await createRevision(2);
+    await insertUnreadable(active, 1);
+    await pool.query("UPDATE occ.agents SET active_revision_id = $2 WHERE id = $1", [
+      agent.id,
+      active.id,
+    ]);
+
+    // An unreadable older snapshot must not make a healthy active revision unavailable.
+    const selection = await controller.getAdministerableActiveAgentRevision(
+      principalId,
+      namespaceId,
+      agent.id,
+    );
+    assert.equal(selection.revision.id, active.id);
+    assert.equal(selection.successor, undefined);
+
+    // Only the newest later revision is decoded strictly, and it fails closed when unreadable.
+    const newer = await createRevision(3);
+    const withSuccessor = await controller.getAdministerableActiveAgentRevision(
+      principalId,
+      namespaceId,
+      agent.id,
+    );
+    assert.equal(withSuccessor.successor?.id, newer.id);
+    await insertUnreadable(active, 4);
+    await assert.rejects(
+      controller.getAdministerableActiveAgentRevision(principalId, namespaceId, agent.id),
+      { name: "DependencyUnavailableError" },
+    );
   },
 );
 
@@ -2003,5 +2232,106 @@ test(
       [namespace.data.id, principalId],
     );
     assert.ok(denial.rowCount > 0, "revocation must produce attributable durable failure evidence");
+  },
+);
+
+test(
+  "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace",
+  requiresPostgres,
+  async (context) => {
+    const api = await startController(context);
+    const agent = new Agent({ keepAlive: true });
+    context.after(() => agent.destroy());
+    const body = JSON.stringify({ email: adminEmail, password: adminPassword });
+    // `expect: 100-continue` makes the server answer as it admits the request, before the
+    // body. The request is then in flight on a keep-alive socket when shutdown begins.
+    const signIn = httpRequest(`${api.origin}/api/auth/sign-in/email`, {
+      method: "POST",
+      agent,
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+        expect: "100-continue",
+      },
+    });
+    const responded = once(signIn, "response");
+    const admitted = await Promise.race([
+      once(signIn, "continue").then(() => true),
+      responded.then(() => false),
+    ]);
+    assert.ok(admitted, "the API must admit the request before its body arrives");
+
+    // "close" also waits for stdio to end, so the last log lines are read before parsing.
+    const exited = once(api.child, "close");
+    api.child.kill("SIGTERM");
+    // Finish the request only after the listener has closed, so it completes during the drain.
+    const deadline = Date.now() + 5_000;
+    while (
+      await fetch(api.origin).then(
+        () => true,
+        () => false,
+      )
+    ) {
+      assert.ok(Date.now() < deadline, "the API never stopped accepting connections");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    signIn.end(body);
+
+    // Admitted work still completes during the drain.
+    const [response] = await responded;
+    response.resume();
+    assert.equal(response.statusCode, 200);
+
+    // The drained response's socket must not hold shutdown open until the keep-alive
+    // timeout (about 72 s), past the API Pod's 30 s default termination grace.
+    let timer;
+    const [code, signal] = await Promise.race([
+      exited,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("the API did not exit within 10 s of the drained response")),
+          10_000,
+        );
+      }),
+    ]).finally(() => clearTimeout(timer));
+    assert.deepEqual({ code, signal }, { code: 0, signal: null });
+
+    // The Pod log alone must show that the drain began on SIGTERM and that every onClose
+    // hook finished; otherwise only the exit code tells a clean drain from a cut-off one.
+    const events = api
+      .output()
+      .split("\n")
+      .flatMap((line) => {
+        // stdout and stderr share one buffer, so skip anything that is not a whole JSON line.
+        try {
+          return [JSON.parse(line)];
+        } catch {
+          return [];
+        }
+      });
+    const started = events.findIndex(({ event }) => event === "shutdown.started");
+    const completed = events.findIndex(({ event }) => event === "shutdown.completed");
+    // startController's readiness sign-in logs first; the drained request is the last one.
+    const drained = events.findLastIndex(
+      ({ event, route }) => event === "http.completed" && route === "/api/auth/sign-in/email",
+    );
+    assert.ok(started >= 0, `no shutdown.started event:\n${api.output()}`);
+    assert.ok(completed >= 0, `no shutdown.completed event:\n${api.output()}`);
+    assert.ok(started < drained && drained < completed, "the drained request logs between them");
+    assert.equal(events[started].severity, "INFO");
+    assert.equal(events[started].signal, "SIGTERM");
+    assert.equal(events[completed].severity, "INFO");
+    assert.equal(typeof events[completed].durationMs, "number");
+
+    // The listening line times the boot from process start and names each phase.
+    const listening = events.find(({ event }) => event === "listening");
+    assert.ok(Number.isSafeInteger(listening?.startupMs), `no startup time:\n${api.output()}`);
+    assert.deepEqual(Object.keys(listening.phasesMs), [
+      "modules",
+      "configuration",
+      "composition",
+      "ready",
+      "listen",
+    ]);
   },
 );

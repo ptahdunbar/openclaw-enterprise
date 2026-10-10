@@ -11,8 +11,10 @@ Installation administrators share an Agent using an existing person's Principal 
 The console reuses or creates Namespace-scoped Roles for `namespace:read` and,
 separately, `agent:read` plus `agent:administer`, bound to the exact Namespace and
 Agent. Role reuse requires matching scope and permissions, regardless of name.
-Namespace read enables discovery without granting child access. The API validates
-subjects and targets. Sharing does not provision or search for accounts.
+Namespace read enables discovery without granting child access. The console
+accepts only a `prn_` Principal ID and rejects an email address before any
+request; the API validates subjects and targets, and an unknown Principal ID is
+reported as such. Sharing does not provision or search for accounts.
 
 The acknowledgment covers full native administration of the shared Agent,
 including its conversations, settings, tools and accessible credentials. This is
@@ -34,8 +36,10 @@ Policy mutations run sequentially. Confirmed steps remain visible after a later
 failure. After an uncertain response, **Refresh sharing** reads current Roles
 and bindings before another change is allowed; writes never retry automatically.
 A matching binding proves present configuration, not the outcome of an earlier
-request. Policy read denial affects only the sharing panel; Agent detail, native
-admission and stop retain their own authorization checks. An expired session
+request. The console omits the sharing panel for people who are not Installation
+administrators, so it never reads (and the API never audits a denial of) sharing
+policy for them; Agent detail, native admission and stop retain their own
+authorization checks. An expired session
 clears the private view as usual.
 
 ## Related

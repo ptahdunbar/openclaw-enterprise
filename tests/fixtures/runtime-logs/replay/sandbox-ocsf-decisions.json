@@ -1,0 +1,133 @@
+{
+  "sandbox": "sb-0123456789abcdef",
+  "lines": [
+    {
+      "time": "2026-04-01T04:04:13.065000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "CONFIG:DISCOVERY [INFO] Server returned no policy; attempting local discovery",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:13.078000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "CONFIG:VALIDATED [INFO] Validated 'sandbox' user exists in image",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:13.090000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "CONFIG:LOADED [INFO] Policy reloaded successfully [policy_hash:0cc0c2b525573c07]",
+      "source": "gateway",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:13.101000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "NET:LISTEN [INFO] 10.200.0.1:3128",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:14.002000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "PROC:LAUNCH [INFO] sleep(49)",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:32.118000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "NET:OPEN [INFO] ALLOWED /usr/bin/curl(58) -> api.github.com:443 [policy:github_api engine:opa]",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:32.190000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "HTTP:GET [INFO] ALLOWED GET http://api.github.com/zen [policy:github_api engine:opa]",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:32.200000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "HTTP:GET [INFO] ALLOWED curl(68) -> GET http://172.20.0.1:9876/test [policy:allow_host_9876 engine:mechanistic]",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:32.690000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "NET:OPEN [MED] DENIED /usr/bin/curl(64) -> httpbin.org:443 [policy:- engine:opa] [reason:no matching policy]",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:33.012000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "NET:OPEN [MED] DENIED /usr/bin/curl(1618) -> 169.254.169.254:80 [policy:- engine:ssrf] [reason:resolves to always-blocked address]",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:33.500000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "HTTP:POST [MED] DENIED POST http://api.github.com/user/repos [policy:github_api engine:opa]",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:34.001000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "NET:REFUSE [MED] DENIED node(1234) -> 93.184.216.34:443/tcp [policy:bypass-detect engine:nftables]",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:34.300000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "OCSF",
+      "target": "ocsf",
+      "message": "CONFIG:DETECTED [INFO] Settings poll: config change detected [old_revision:2915564174587774909 new_revision:11008534403127604466 policy_changed:true]",
+      "source": "sandbox",
+      "fields": {}
+    },
+    {
+      "time": "2026-04-01T04:04:34.500000000Z",
+      "sandboxId": "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+      "level": "INFO",
+      "target": "openshell_supervisor",
+      "message": "Isolation boundary attached",
+      "source": "sandbox",
+      "fields": {
+        "backend": "landlock"
+      }
+    }
+  ]
+}

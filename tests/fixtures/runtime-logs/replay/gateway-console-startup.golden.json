@@ -1,0 +1,422 @@
+{
+  "input": 26,
+  "withheld": 0,
+  "records": [
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:53.200000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "loading configuration…",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:53.225000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "resolving authentication…",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:53.235000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "warn",
+      "message": "Gateway auth mode=none explicitly configured; all gateway connections are unauthenticated.",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:53.237000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "starting...",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:53.620000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "shutdown budget at startup: drain=315000ms shutdown=325000ms reserve=10000ms exitMargin=5000ms; source=Gateway stop policy=330000ms",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:53.736000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "spawn broker ready pid=287",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:55.706000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "starting HTTP server...",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:55.907000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "started (interval: 300s, startup-grace: 60s, channel-connect-grace: 120s)",
+      "subsystem": "gateway/health-monitor"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:56.654000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "agent model: openai/gpt-6-astra (thinking=medium, fast=off)",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:56.654000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "http server listening (14 plugins: anthropic, browser, canvas, cua-computer, device-pair, file-transfer, geolocation, github, linux-node, memory-core, ollama, openai, talk-voice, xai; 3.0s)",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:56.655000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "log file: /tmp/openclaw/openclaw-2026-09-30.log",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:56.656000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "native runtime: {\"pid\":207,\"platform\":\"linux\",\"arch\":\"x64\",\"node\":\"24.19.0\",\"v8\":\"13.6.233.17-node.51\",\"uv\":\"1.52.1\",\"openssl\":\"3.5.7\",\"sqlite\":\"3.53.3\"}",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:56.656000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "worker startup state: {\"workerCount\":4,\"workerLifecycle\":[{\"script\":\"other\",\"started\":1,\"retired\":[{\"reason\":\"exit\",\"count\":1}]},{\"script\":\"sqlite-store.worker.js\",\"started\":1,\"retired\":[]},{\"script\":\"openclaw-state-lease-heartbeat.worker.js\",\"started\":1,\"retired\":[]},{\"script\":\"worker-native-lifecycle.worker.js\",\"started\":1,\"retired\":[]},{\"script\":\"openclaw-state-read.worker.js\",\"started\":1,\"retired\":[]}],\"compute\":{\"limit\":1,\"active\":0,\"waitingPools\":0,\"pendingTasks\":0,\"pendingBytes\":0}}",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:56.683000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "starting channels and sidecars...",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:58.557000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "memory-core: created managed dreaming cron job.",
+      "subsystem": "plugins"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:58.570000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "gateway startup outcomes: internal-hooks=skipped (not-configured); internal-startup-hook=skipped (no-handlers-loaded); gateway-start-hooks=scheduled; gmail-watcher=skipped (hooks-disabled); gmail-model=skipped (not-configured)",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:58.600000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "gateway ready",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:58.738000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "heartbeat: started",
+      "subsystem": "gateway/heartbeat"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:59:01.143000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "remote model catalog downloaded; restart the Gateway to apply it",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:59:01.212000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "update available (latest): v2026.9.7 (current v2026.9.6). Run: openclaw update",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:59:28.218000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "admission closed: stop (SIGTERM)",
+      "subsystem": "gateway/admission"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:59:28.219000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "received SIGTERM; shutting down",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:59:28.225000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "shutdown budget at shutdown: drain=315000ms shutdown=325000ms reserve=10000ms exitMargin=5000ms; source=Gateway stop policy=330000ms",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:59:28.229000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "active-work drain settled; beginning server close",
+      "subsystem": "gateway"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:59:28.292000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "gmail watcher stopped",
+      "subsystem": "gmail-watcher"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:59:28.536000000Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "openclaw",
+      "level": "info",
+      "message": "shutdown completed cleanly in 301ms",
+      "subsystem": "gateway/shutdown"
+    }
+  ]
+}

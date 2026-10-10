@@ -1,0 +1,16 @@
+2026-09-30T17:37:31.093426410Z {
+2026-09-30T17:37:31.093490319Z   "ok": true,
+2026-09-30T17:37:31.093493525Z   "configPath": "/home/node/.openclaw-node/openclaw.json",
+2026-09-30T17:37:31.093499606Z   "configStatus": "updated",
+2026-09-30T17:37:31.093502722Z   "workspaceDir": "/home/node/workspace",
+2026-09-30T17:37:31.093505918Z   "sessionsDir": "/home/node/.openclaw-node/agents/main/sessions"
+2026-09-30T17:37:31.093508032Z }
+2026-09-30T17:37:31.315256676Z {"event":"runtime.startup_phase","container":"agent","phase":"workspace-baseline","outcome":"ok","ms":3315,"sinceStartMs":3326}
+2026-09-30T17:37:31.315574759Z {"event":"runtime.startup_phase","container":"agent","phase":"supervisor-spawn","outcome":"ok","ms":3328,"sinceStartMs":3328}
+2026-09-30T17:37:31.437872708Z {"event":"runtime.startup_phase","container":"agent","phase":"codex-login","outcome":"ok","ms":77,"sinceStartMs":79}
+2026-09-30T17:37:33.077650948Z {"event":"runtime.startup_phase","container":"agent","phase":"node-setup","outcome":"ok","ms":1761,"sinceStartMs":5089}
+2026-09-30T17:37:36.927337215Z [node-host] advertised commands: dir.list, file.create, file.fetch, file.stat, file.write, workspace.memory, workspace.skills
+2026-09-30T17:37:37.181685580Z node host gateway connected: wss://occ-gateway-000000000000.envoy-gateway-system.svc:443/namespaces/ns_00000000-0000-4000-8000-000000000000/agents/agt_00000000-0000-4000-8000-000000000000/node
+2026-09-30T17:37:47.518883116Z {"event":"codex.model_probe","attempt":1,"elapsedMs":16082,"exitCode":1,"signal":null,"code":"AUTHENTICATION_FAILED"}
+2026-09-30T17:37:47.518904886Z {"event":"runtime.startup_phase","container":"agent","phase":"model-probe","outcome":"failed","ms":16082,"sinceStartMs":16163}
+2026-09-30T17:37:47.519258164Z Harness model authentication probe failed.

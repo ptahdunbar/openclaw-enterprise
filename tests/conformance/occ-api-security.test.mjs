@@ -1,27 +1,31 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { createControllerApp } from "../../apps/controller/src/index.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
-  InMemoryPlatformState,
-  OpenClawController,
+  createRuntimeLogCursorCodec,
+  RuntimeLogsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
-import {
-  authenticatedHeaders,
-  createTestAuthPrincipal,
-  signInToControllerApp,
-} from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import {
+  administerGrants,
+  createRuntimeLogComputeDriver,
+  createRuntimeLogFixture,
+  operateGrants,
+} from "../helpers/runtime-logs.mjs";
+import {
+  createTenantReaderFixture,
+  tenantANamespaceId,
+  tenantRequest as request,
+} from "../helpers/tenant-reader-app.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
 const bootstrapDefaultNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
-const tenantANamespaceId = "ns_00000000-0000-4000-8000-000000000002";
 
 const permissions = [
   { action: "administer", resourceKind: "installation" },
@@ -41,211 +45,24 @@ const permissions = [
   { action: "administer", resourceKind: "agent" },
 ];
 
-async function createFixture(options = {}) {
-  const adminAuth = await createTestAuthPrincipal({
+function createFixture(options = {}) {
+  return createTenantReaderFixture({
     installationId,
-    name: "Security Administrator",
-  });
-  const administrator = adminAuth.seed.principal;
-  const readerEmail = `tenant-a-reader-${randomUUID()}@example.com`;
-  const readerPassword = `generated-password-${randomUUID()}`;
-  const readerAccount = await adminAuth.auth.createAccount({
-    email: readerEmail,
-    password: readerPassword,
-    name: "Tenant A Reader",
-  });
-  const readerSeed = adminAuth.auth.principalSeed(readerAccount, { grant: "none" });
-  const tenantAReader = readerSeed.principal;
-  const identities = options.identities ?? [administrator, tenantAReader];
-  const identityIds = new Set(identities.map(({ id }) => id));
-  const state = {
-    identities,
-    groups: [],
-    memberships: [],
-    roles: [
-      {
-        id: "role-administrator",
-        permissions: [...permissions],
-      },
-      {
-        id: "role-tenant-a-reader",
-        namespaceId: tenantANamespaceId,
-        permissions: [
-          { action: "read", resourceKind: "namespace" },
-          { action: "read", resourceKind: "agent" },
-          { action: "read", resourceKind: "agent_revision" },
-        ],
-      },
-    ],
-    bindings: [
-      {
-        id: "binding-administrator",
-        subjectKind: "identity",
-        subjectId: administrator.id,
-        roleId: "role-administrator",
-      },
-      {
-        id: "binding-tenant-a-reader",
-        namespaceId: tenantANamespaceId,
-        subjectKind: "identity",
-        subjectId: tenantAReader.id,
-        roleId: "role-tenant-a-reader",
-      },
-    ].filter(({ subjectId }) => identityIds.has(subjectId)),
-    restrictions: options.restrictions ?? [],
-  };
-  const iamDriver = new NativeIAMDriver(
-    { loadNativeIAMState: async () => state },
-    { id: "iam-security" },
-  );
-  const computeDriver = {
-    id: "compute-security",
-    capability: "compute",
-    implementation: "deterministic-test",
-    async ensureNamespace(namespace) {
-      return {
-        namespaceId: namespace.id,
-        namespaceReady: true,
-      };
-    },
-    async deleteNamespace(namespace) {
-      return {
-        namespaceId: namespace.id,
-        namespaceDeleted: true,
-      };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
-  };
-  const auditSink = new InMemoryAuditSink();
-  const configurationDriver = createTestConfigurationDriver({ id: "configuration-security" });
-  const sessions = new Map();
-  let controller;
-  let sequence = 0;
-  let configurationSequence = 0;
-
-  function createApp(principal = administrator, overrides = {}, factory = createControllerApp) {
-    const app = factory({
-      ...(controller
-        ? { controller }
-        : {
-            createController(installation) {
-              controller = new OpenClawController(installation, {
-                state: new InMemoryPlatformState({ auditSink }),
-                recordOperations: false,
-                createId(kind) {
-                  if (kind === "configuration") {
-                    configurationSequence += 1;
-                    return `cfg_10000000-0000-4000-8000-${String(configurationSequence).padStart(12, "0")}`;
-                  }
-                  sequence += 1;
-                  const prefix = {
-                    namespace: "ns",
-                    agent: "agt",
-                    agent_revision: "rev",
-                  }[kind];
-                  return `${prefix}_00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
-                },
-              });
-              return controller;
-            },
-          }),
-      iamDriver,
-      computeDriver,
-      configurationDriver,
-      resolveHarness: resolveApprovedDevelopmentHarness,
-      auditSink,
-      development: {
-        enabled: true,
-        installationId,
-        ...overrides.development,
-      },
-      auth: adminAuth.auth,
+    label: "security",
+    administratorName: "Security Administrator",
+    readerName: "Tenant A Reader",
+    administratorPermissions: permissions,
+    computeDriver: createReadyComputeDriver("compute-security"),
+    recordOperations: true,
+    appOptions: (overrides) => ({
       ...(overrides.maxBodyBytes === undefined ? {} : { maxBodyBytes: overrides.maxBodyBytes }),
       ...(overrides.gatewayRequestTimeoutMs === undefined
         ? {}
         : { gatewayRequestTimeoutMs: overrides.gatewayRequestTimeoutMs }),
       ...(overrides.publicOrigin === undefined ? {} : { publicOrigin: overrides.publicOrigin }),
-    });
-    app.defaultSession = sessions.get(principal.id);
-    return app;
-  }
-
-  const app = createApp(administrator, options);
-  sessions.set(administrator.id, await signInToControllerApp(app, adminAuth));
-  sessions.set(
-    tenantAReader.id,
-    await signInToControllerApp(app, { email: readerEmail, password: readerPassword }),
-  );
-  app.defaultSession = sessions.get(administrator.id);
-
-  return {
-    app,
-    administrator,
-    tenantAReader,
-    auditSink,
-    createApp,
-    auth: adminAuth.auth,
-    iamDriver,
-    state,
-    get controller() {
-      return controller;
-    },
-  };
-}
-
-async function request(app, pathname, options = {}) {
-  const headers = new Headers(
-    options.identity === false ? {} : authenticatedHeaders(options.session ?? app.defaultSession),
-  );
-
-  for (const [name, value] of Object.entries(options.headers ?? {})) {
-    if (value === null) {
-      headers.delete(name);
-    } else {
-      headers.set(name, value);
-    }
-  }
-
-  const hasBody = Object.hasOwn(options, "body");
-  if (hasBody && !headers.has("content-type")) {
-    headers.set("content-type", "application/json");
-  }
-  const body = hasBody
-    ? typeof options.body === "string"
-      ? options.body
-      : JSON.stringify(options.body)
-    : undefined;
-  const response = await app.fetch(
-    new Request(new URL(pathname, options.origin ?? "http://127.0.0.1"), {
-      method: options.method ?? (hasBody ? "POST" : "GET"),
-      headers,
-      ...(body === undefined ? {} : { body }),
     }),
-  );
-  const contentType = response.headers.get("content-type");
-  assert.match(contentType ?? "", /^application\/json\b/i);
-  const payload = await response.json();
-  assert.match(
-    payload.meta?.requestId ?? "",
-    /^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
-
-  if (response.ok) {
-    assert.ok(Object.hasOwn(payload, "data"));
-  } else {
-    assert.equal(typeof payload.error?.code, "string");
-    assert.equal(typeof payload.error?.message, "string");
-  }
-
-  return { response, payload };
+    options,
+  });
 }
 
 async function bootstrap(fixture) {
@@ -337,12 +154,15 @@ test("existing namespace adoption requires installation administration and waits
   assert.equal(denial.authorization.action, "administer");
   assert.deepEqual(denial.authorization.resource, { kind: "installation", id: installationId });
 
-  // Even an administrator cannot silently adopt through Docker or another unsupported Driver.
+  // Even an administrator cannot silently adopt through Docker or another unsupported Driver,
+  // and the refusal leaves no Namespace behind.
+  const namespacesBefore = (await request(fixture.app, "/namespaces")).payload.data;
   const unsupported = await request(fixture.app, "/namespaces", {
     body: { name: "Unsupported adoption", existingNamespace: "operator-owned" },
   });
   assert.equal(unsupported.response.status, 409);
   assert.equal(unsupported.payload.error.code, "RESOURCE_CONFLICT");
+  assert.deepEqual((await request(fixture.app, "/namespaces")).payload.data, namespacesBefore);
 
   const kubernetes = createTestKubernetesComputeDriver("compute-security-kubernetes");
   fixture.controller.registerDriver(kubernetes);
@@ -390,6 +210,7 @@ test("existing namespace adoption requires installation administration and waits
     { body: { kind: "agent", values: {} } },
   );
   assert.equal(ready.response.status, 201);
+  assert.equal(ready.payload.data.namespaceId, selected.payload.data.id);
 });
 
 test("Agent configuration replacement requires exact Agent update authorization and returns Agent service principal identity", async () => {
@@ -472,6 +293,14 @@ test("development admission fails closed outside explicit loopback-only developm
     createFixture({ development: { trustedCidrs: ["not-a-cidr"] } }),
     /IPv4 CIDR/,
   );
+  // "08" is prefix 8, and "010" is decimal 10. Production trusted proxies refuse both.
+  for (const cidr of ["192.168.0.0/08", "10.0.0.010/32", "10.0.0.0/032"]) {
+    await assert.rejects(
+      createFixture({ development: { trustedCidrs: [cidr] } }),
+      /IPv4 CIDR/,
+      cidr,
+    );
+  }
 
   const fixture = await createFixture();
   const remote = await request(fixture.app, "/installation/bootstrap", {
@@ -502,6 +331,35 @@ test("development admission fails closed outside explicit loopback-only developm
     });
     assert.equal(response.response.status, 403);
     assert.equal(fixture.controller, undefined);
+  }
+});
+
+test("a trusted development CIDR admits its own range and nothing else", async (t) => {
+  const development = { trustedCidrs: ["10.89.0.0/16"] };
+  const fixture = await createFixture({ development });
+  await bootstrap(fixture);
+  // app.fetch always injects from 127.0.0.1; Fastify inject can name the peer address.
+  const app = fixture.createApp(fixture.administrator, { development }, createFastifyApp);
+  t.after(() => app.close());
+  const list = (remoteAddress) =>
+    app.inject({
+      url: "/namespaces",
+      remoteAddress,
+      headers: authenticatedHeaders(fixture.app.defaultSession),
+    });
+  for (const admitted of ["127.0.0.1", "10.89.0.1", "10.89.255.254", "::ffff:10.89.3.4"]) {
+    assert.equal((await list(admitted)).statusCode, 200, admitted);
+  }
+  for (const refused of [
+    "10.90.0.1",
+    "10.88.255.255",
+    "192.0.2.10",
+    "fd00::1",
+    "::ffff:10.90.0.1",
+  ]) {
+    const response = await list(refused);
+    assert.equal(response.statusCode, 403, refused);
+    assert.match(response.json().error.message, /restricted to direct loopback requests/, refused);
   }
 });
 
@@ -682,6 +540,39 @@ test("bootstrap fails closed when default Namespace creation is denied and later
   await bootstrappedDefaultNamespace(fixture);
 });
 
+test("bootstrap without Installation administer is refused and audited", async () => {
+  const restrictions = [
+    {
+      id: "restriction-no-installation-administer",
+      action: "administer",
+      resourceKind: "installation",
+      effect: "deny",
+    },
+  ];
+  const fixture = await createFixture({ restrictions });
+
+  const eventsBefore = fixture.auditSink.events.length;
+  const denied = await request(fixture.app, "/installation/bootstrap", {
+    body: { name: "Refused Installation" },
+  });
+  assert.equal(denied.response.status, 403);
+  assert.equal(denied.payload.error.code, "FORBIDDEN");
+  assert.equal(fixture.controller, undefined);
+  assert.equal(fixture.auditSink.events.length, eventsBefore + 1);
+  const deniedEvent = fixture.auditSink.events.at(-1);
+  assert.equal(deniedEvent.kind, "authorization_denial");
+  assert.equal(deniedEvent.actorId, fixture.administrator.id);
+  assert.deepEqual(deniedEvent.details.iamEvidence.restrictionIds, [
+    "restriction-no-installation-administer",
+  ]);
+
+  restrictions.length = 0;
+  const bootstrapped = await request(fixture.app, "/installation/bootstrap", {
+    body: { name: "Allowed Installation" },
+  });
+  assert.equal(bootstrapped.response.status, 201);
+});
+
 test("concurrent streaming bootstrap creates one audited Installation", async () => {
   const fixture = await createFixture();
   let releaseBodies;
@@ -742,7 +633,17 @@ test("concurrent streaming bootstrap creates one audited Installation", async ()
   assert.equal(bootstrapEvents.length, 1);
   assert.equal(bootstrapEvents[0].resource.id, installation.id);
   assert.equal(bootstrapEvents[0].actorId, fixture.administrator.id);
-  assert.deepEqual(fixture.controller.pendingOperations(), []);
+  // Only the winning bootstrap queues provisioning of the default Namespace.
+  assert.deepEqual(fixture.controller.pendingOperations(), [
+    {
+      kind: "namespace",
+      action: "reconcile",
+      target: "ready",
+      namespaceId: bootstrapDefaultNamespaceId,
+      resourceId: bootstrapDefaultNamespaceId,
+      actorId: fixture.administrator.id,
+    },
+  ]);
 });
 
 test("an existing controller cannot be configured for a different Installation", async () => {
@@ -790,12 +691,172 @@ test("malformed, non-JSON, invalid, and oversized inputs fail without mutations"
     assert.equal(fixture.controller.pendingOperations().length, before);
   }
 
+  // Route-specific Preset defaults must still obey an explicitly smaller application limit.
+  for (const method of ["POST", "PATCH"]) {
+    const suffix = method === "PATCH" ? "/pre_00000000-0000-4000-8000-000000000001" : "";
+    const result = await request(
+      fixture.app,
+      `/namespaces/${tenantANamespaceId}/presets${suffix}`,
+      {
+        method,
+        body: {
+          name: "Bounded",
+          template: {
+            variables: { guidance: { type: "string", default: "Routine guidance. ".repeat(40) } },
+          },
+        },
+      },
+    );
+    assert.equal(result.response.status, 413);
+    assert.equal(fixture.controller.pendingOperations().length, before);
+  }
+
   assert.equal(
     fixture.auditSink.events.filter(
       (event) => event.kind === "mutation" && event.resource.kind === "namespace",
     ).length,
     0,
   );
+});
+
+test("NUL characters and unpaired surrogates are refused in bodies and path parameters", async () => {
+  // PostgreSQL text and jsonb cannot store either one: they answered 500 or 503 there, while
+  // the in-memory State accepted them. A lone surrogate in a name was stored as U+FFFD.
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const namespace = await createNamespace(fixture, "Unstorable text tenant");
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const nul = ["a NUL character", "INVALID_FORMAT"];
+  const surrogate = ["an unpaired UTF-16 surrogate", "INVALID_VALUE"];
+  // A deep body inside the 64 KiB limit; its detail path keeps whole leading segments.
+  const deep = 30_000;
+  const deepPath = `/values/x${"/0".repeat((512 - "/values/x".length) >> 1)}`;
+  const cases = [
+    ["/namespaces", '{"name":"lone \\ud800 surrogate"}', "/name", surrogate],
+    ["/namespaces", '{"name":"trailing \\udc00"}', "/name", surrogate],
+    [configurations, '{"kind":"agent","values":{"x":"a\\u0000b"}}', "/values/x", nul],
+    [configurations, '{"kind":"agent","values":{"a\\u0000~/":"x"}}', "/values/a?~0~1", nul],
+    [configurations, '{"kind":"agent","values":{"\\udbff":"x"}}', "/values/?", surrogate],
+    // The first offender in document order is named.
+    [
+      configurations,
+      '{"kind":"agent","values":{"first":["ok","\\ud800"],"second":"\\u0000"}}',
+      "/values/first/1",
+      surrogate,
+    ],
+    // Keys and values share document order.
+    [configurations, '{"kind":"agent","values":{"a":"\\u0000","b\\ud800":1}}', "/values/a", nul],
+    // A first segment too long for the 512-character detail path is cut, not dropped.
+    [configurations, `{"${"k".repeat(600)}\\u0000":1}`, `/${"k".repeat(511)}`, nul],
+    [
+      configurations,
+      `{"kind":"agent","values":{"x":${"[".repeat(deep)}"\\u0000"${"]".repeat(deep)}}}`,
+      deepPath,
+      nul,
+    ],
+  ];
+  for (const [pathname, body, path, [problem, code]] of cases) {
+    const result = await request(fixture.app, pathname, { body });
+    assert.equal(result.response.status, 400, body.slice(0, 80));
+    assert.equal(result.payload.error.code, "INVALID_REQUEST");
+    assert.deepEqual(result.payload.error.details, [{ path, code }]);
+    const before = "The request does not match the operation contract: body ";
+    const after = ` contains ${problem}.`;
+    // A path too long for the 256-character message cap is cut, never the problem wording.
+    const room = 256 - before.length - after.length;
+    const shown = path.length <= room ? path : `${path.slice(0, room - 1)}…`;
+    assert.equal(result.payload.error.message, `${before}${shown}${after}`);
+  }
+  // A surrogate pair is one well-formed character.
+  const paired = await request(fixture.app, "/namespaces", { body: { name: "Paired \u{1F600}" } });
+  assert.equal(paired.response.status, 201);
+
+  const role = await request(fixture.app, `/namespaces/${namespace.id}/iam/roles/role%00x`);
+  assert.equal(role.response.status, 400);
+  assert.deepEqual(role.payload.error.details, [{ path: "/roleId", code: "INVALID_FORMAT" }]);
+  assert.equal(
+    role.payload.error.message,
+    "The request does not match the operation contract: params /roleId contains a NUL character.",
+  );
+
+  const namespaces = await request(fixture.app, "/namespaces");
+  assert.deepEqual(
+    namespaces.payload.data.map(({ name }) => name),
+    ["default", "Unstorable text tenant", "Paired \u{1F600}"],
+  );
+  assert.equal(
+    fixture.auditSink.events.filter(
+      (event) => event.kind === "mutation" && event.resource.kind === "configuration",
+    ).length,
+    0,
+  );
+});
+
+test("router failures answer the error envelope without echoing the path", async () => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const namespace = await createNamespace(fixture, "Router failure tenant");
+  const roles = `/namespaces/${namespace.id}/iam/roles`;
+  const contract = "The request does not match the operation contract";
+  for (const [pathname, status, code, message] of [
+    // Fastify answered these itself: its own body naming FST_ERR_* and the submitted path,
+    // no meta.requestId, x-request-id, cache-control or nosniff, and 414 for a long parameter.
+    [
+      "/namespaces/%ZZ",
+      400,
+      "INVALID_REQUEST",
+      "The request path has a malformed percent-encoding.",
+    ],
+    [
+      `${roles}/role%ED%A0%80x`,
+      400,
+      "INVALID_REQUEST",
+      "The request path has a malformed percent-encoding.",
+    ],
+    [
+      `${roles}/${"r".repeat(401)}`,
+      400,
+      "INVALID_REQUEST",
+      `${contract}: a path parameter is too long.`,
+    ],
+    // Role IDs may hold 200 characters, so a long one reaches the route.
+    [
+      `${roles}/${"r".repeat(200)}`,
+      404,
+      "NOT_FOUND",
+      "The requested platform resource was not found.",
+    ],
+    [
+      `${roles}/${"%F0%9F%98%80".repeat(200)}`,
+      404,
+      "NOT_FOUND",
+      "The requested platform resource was not found.",
+    ],
+  ]) {
+    const { response, payload } = await request(fixture.app, pathname);
+    assert.equal(response.status, status, pathname.slice(0, 80));
+    assert.deepEqual(payload.error, { code, message });
+    assert.deepEqual(Object.keys(payload).sort(), ["error", "meta"]);
+    assert.doesNotMatch(JSON.stringify(payload), /FST_ERR|%ZZ|%ED|rrrr/);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  }
+});
+
+test("names are measured in characters, not UTF-16 code units", async () => {
+  // 200 emoji fit the 200-character contract (and PostgreSQL char_length), but each is two
+  // UTF-16 code units; the controller answered 404 NOT_FOUND for such a Namespace or Agent.
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const name = "\u{1F600}".repeat(200);
+  const namespace = await createNamespace(fixture, name);
+  assert.equal(namespace.name, name);
+  const agent = await createAgent(fixture, namespace, name);
+  assert.equal(agent.name, name);
+
+  const tooLong = await request(fixture.app, "/namespaces", { body: { name: `${name}x` } });
+  assert.equal(tooLong.response.status, 400);
+  assert.deepEqual(tooLong.payload.error.details, [{ path: "/name", code: "TOO_LONG" }]);
 });
 
 test("exact Namespace ownership prevents cross-tenant access and resource traversal", async () => {
@@ -884,6 +945,124 @@ test("exact Namespace ownership prevents cross-tenant access and resource traver
   }
 });
 
+test("a caller without a grant gets the same audited denial whether or not the target exists", async () => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  await createNamespace(fixture, "Tenant A");
+  const namespace = await createNamespace(fixture, "Tenant B");
+  const agent = await createAgent(fixture, namespace, "Agent B");
+  const missingNamespaceId = "ns_9e5b1c7a-5d2f-4c1e-8a3b-0f6d2e7c9a41";
+  const missingAgentId = "agt_4b8e2d1f-7a3c-4e9b-9c5d-2a1f8e6b3d70";
+  const child = (prefix) => `${prefix}_6c2a9f1e-3b7d-4a8c-b5e1-9d4f2a7c8e03`;
+  const reader = fixture.tenantAReader;
+  const readerApp = fixture.createApp(reader);
+
+  // The reader holds no grant in Tenant B. Every target below must answer the same audited
+  // 403 whether the Namespace or Agent exists, so a refusal never reveals which ids are real.
+  const namespaceRoutes = [
+    ["GET", "agents/repository-options"],
+    ["GET", `agents/provision/${child("work")}`],
+    ["POST", `agents/provision/${child("work")}/retry`],
+    ["GET", "presets"],
+    ["POST", "agents", { name: "probe", configurationId: agent.configurationId }],
+    ["POST", "configurations", { kind: "agent", values: {} }],
+    ["PATCH", `configurations/${child("cfg")}`, { values: {} }],
+    ["DELETE", `configurations/${child("cfg")}`],
+    ["POST", "secrets", { name: "probe", value: "probe-value" }],
+    ["PATCH", `secrets/${child("sec")}`, { value: "probe-value" }],
+    ["DELETE", `secrets/${child("sec")}`],
+    ["POST", "credential-sources", { name: "probe", type: "openai" }],
+    ["PATCH", `credential-sources/${child("cs")}`, {}],
+    ["DELETE", `credential-sources/${child("cs")}`],
+    ["POST", "presets", { name: "probe", template: {} }],
+    ["PATCH", `presets/${child("pre")}`, { name: "probe" }],
+    ["DELETE", `presets/${child("pre")}`],
+    ["POST", "service-accounts", { name: "probe" }],
+    ["POST", `service-accounts/${child("sa")}/credentials`, {}],
+    [
+      "PATCH",
+      `service-accounts/${child("sa")}/credential`,
+      { kind: "api_key", secretRef: { name: "probe", key: "probe" } },
+    ],
+    ["DELETE", `service-accounts/${child("sa")}`],
+    ["DELETE", ""],
+  ];
+  const agentRoutes = [
+    ["GET", ""],
+    ["GET", `revisions/${missingRevisionId}`],
+    ["GET", `deployments/${missingRevisionId}`],
+    ["GET", "repository-options"],
+    ["PATCH", "", { configurationId: agent.configurationId }],
+    ["POST", "deploy"],
+    ["POST", "stop"],
+    ["POST", `credential-sources/${child("cs")}/withdraw`],
+    ["DELETE", ""],
+  ];
+  const probes = [
+    ...namespaceRoutes.flatMap(([method, suffix, body]) =>
+      [namespace.id, missingNamespaceId].map((namespaceId) => ({
+        method,
+        body,
+        pathname: `/namespaces/${namespaceId}${suffix ? `/${suffix}` : ""}`,
+      })),
+    ),
+    ...agentRoutes.flatMap(([method, suffix, body]) =>
+      [
+        [namespace.id, agent.id],
+        [namespace.id, missingAgentId],
+        [missingNamespaceId, missingAgentId],
+      ].map(([namespaceId, agentId]) => ({
+        method,
+        body,
+        pathname: `/namespaces/${namespaceId}/agents/${agentId}${suffix ? `/${suffix}` : ""}`,
+      })),
+    ),
+  ];
+
+  const leaks = [];
+  for (const { method, pathname, body } of probes) {
+    const auditCount = fixture.auditSink.events.length;
+    const result = await request(readerApp, pathname, {
+      method,
+      ...(body === undefined ? {} : { body }),
+    });
+    const denials = fixture.auditSink.events
+      .slice(auditCount)
+      .filter((event) => event.kind === "authorization_denial" && event.actorId === reader.id);
+    if (result.response.status !== 403 || denials.length !== 1) {
+      leaks.push(`${method} ${pathname}: ${result.response.status}, ${denials.length} denials`);
+    }
+  }
+  assert.deepEqual(leaks, []);
+});
+
+test("a denial whose audit cannot be written answers 503, not 403", async () => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  await createNamespace(fixture, "Tenant A");
+  const namespace = await createNamespace(fixture, "Tenant B");
+  const readerApp = fixture.createApp(fixture.tenantAReader);
+  const read = () => request(readerApp, `/namespaces/${namespace.id}`);
+
+  const append = fixture.auditSink.append;
+  fixture.auditSink.append = async (event) => {
+    if (event.kind === "authorization_denial") {
+      throw new Error("audit sink unavailable");
+    }
+    return append.call(fixture.auditSink, event);
+  };
+  try {
+    const unaudited = await read();
+    assert.equal(unaudited.response.status, 503);
+    assert.equal(unaudited.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+  } finally {
+    fixture.auditSink.append = append;
+  }
+  const audited = await read();
+  assert.equal(audited.response.status, 403);
+  assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
+});
+
 test("Namespace deletion authorizes the exact target and rejects nonempty resources", async () => {
   const fixture = await createFixture();
   await bootstrap(fixture);
@@ -953,4 +1132,1035 @@ test("mutations are attributable and authorization failures never leak credentia
   assert.doesNotMatch(JSON.stringify(denied.payload), new RegExp(secret));
   assert.doesNotMatch(JSON.stringify(fixture.auditSink.events), new RegExp(secret));
   assert.equal(fixture.auditSink.events.at(-1)?.resource.id, agent.id);
+});
+
+// Agent runtime status and log reads. Status (tier 1) needs Agent operate + read and
+// revision read; log text (tier 2) needs Agent read_logs (or administer) + read.
+// Every request is re-authorized, including cursor polls, and a denial never reaches
+// the Compute Driver.
+function runtimeLogLine(index, raw = `gateway output ${index}`) {
+  return { time: `2026-09-30T12:00:${String(index).padStart(2, "0")}.000000001Z`, raw };
+}
+
+function driverReads(fixture) {
+  return fixture.computeDriver.calls.filter(({ operation }) => operation === "read");
+}
+
+test("runtime status and log reads enforce their permission tiers before any Driver call", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  fixture.computeDriver.state.lines = [runtimeLogLine(1)];
+
+  const reader = await fixture.createPrincipal("runtime-reader", target, [
+    { action: "read", resourceKind: "agent" },
+    { action: "read", resourceKind: "agent_revision" },
+  ]);
+  const operator = await fixture.createPrincipal("runtime-operator", target, operateGrants);
+  const administerOnly = await fixture.createPrincipal("runtime-administer-only", target, [
+    { action: "administer", resourceKind: "agent" },
+    { action: "read", resourceKind: "agent_revision" },
+  ]);
+  const administrator = await fixture.createPrincipal(
+    "runtime-administrator",
+    target,
+    administerGrants,
+  );
+  fixture.computeDriver.calls.length = 0;
+
+  for (const path of [target.runtimePath, target.logsPath()]) {
+    const denied = await fixture.request("GET", path, { session: reader.session });
+    assert.equal(denied.status, 403, path);
+    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
+  }
+  // Operate is the status audience: it sees Pods and Events but never log text.
+  const status = await fixture.request("GET", target.runtimePath, { session: operator.session });
+  assert.equal(status.status, 200, status.text);
+  assert.equal(
+    status.data.sources[0].pods[0].name,
+    fixture.computeDriver.podName({ id: target.revisionId }),
+  );
+  const operatorLogs = await fixture.request("GET", target.logsPath(), {
+    session: operator.session,
+  });
+  assert.equal(operatorLogs.status, 403);
+  // Without either log grant the denial names the delegable read_logs permission.
+  assert.deepEqual(fixture.auditSink.events.at(-1).authorization, {
+    principalId: operator.principal.id,
+    action: "read_logs",
+    resource: { kind: "agent", id: target.agent.id, namespaceId: target.namespace.id },
+  });
+  const missingRead = await fixture.request("GET", target.logsPath(), {
+    session: administerOnly.session,
+  });
+  assert.equal(missingRead.status, 403);
+  assert.equal(fixture.auditSink.events.at(-1).authorization.action, "read");
+  // No denied request reached the Driver.
+  assert.deepEqual(
+    fixture.computeDriver.calls.map(({ operation }) => operation),
+    ["describe"],
+  );
+
+  const logs = await fixture.request("GET", target.logsPath(), {
+    session: administrator.session,
+  });
+  assert.equal(logs.status, 200, logs.text);
+  assert.equal(logs.data.records[0].message, "gateway output 1");
+
+  // A principal of another Namespace is denied like every revision-scoped route: the
+  // exact revision read is authorized before anything about the runtime is observed.
+  const other = await fixture.deployAgent("runtime-other");
+  const foreign = await fixture.createPrincipal("runtime-foreign", other, administerGrants);
+  fixture.computeDriver.calls.length = 0;
+  for (const path of [target.runtimePath, target.logsPath()]) {
+    const crossNamespace = await fixture.request("GET", path, { session: foreign.session });
+    assert.equal(crossNamespace.status, 403, path);
+  }
+  assert.equal(fixture.computeDriver.calls.length, 0);
+
+  // Service principals use the same bindings (CLI and automation).
+  const service = await fixture.createServicePrincipal("runtime-cli", target, administerGrants);
+  const serviceLogs = await fixture.request("GET", target.logsPath(), {
+    serviceKey: service.serviceKey,
+  });
+  assert.equal(serviceLogs.status, 200, serviceLogs.text);
+});
+
+test("a delegated read_logs principal reads and downloads logs without administer", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  fixture.computeDriver.state.lines = [runtimeLogLine(1)];
+  const logReader = [
+    { action: "read_logs", resourceKind: "agent" },
+    { action: "read", resourceKind: "agent" },
+    { action: "read", resourceKind: "agent_revision" },
+  ];
+  const delegate = await fixture.createPrincipal("runtime-log-reader", target, logReader);
+  const accessEvents = () =>
+    fixture.auditSink.events.filter(
+      ({ action, actor }) =>
+        action.startsWith("openclaw.agents.runtime_logs.") &&
+        actor?.principalId === delegate.principal.id,
+    );
+
+  // read_logs admits log text but nothing the administer tier also covers.
+  const logs = await fixture.request("GET", target.logsPath(), { session: delegate.session });
+  assert.equal(logs.status, 200, logs.text);
+  assert.equal(logs.data.records[0].message, "gateway output 1");
+  const download = await fixture.request("GET", target.logsPath("source=gateway&download=true"), {
+    session: delegate.session,
+  });
+  assert.equal(download.status, 200, download.text);
+  assert.match(download.text, /gateway output 1/);
+  const nativeAdmin = await fixture.request(
+    "GET",
+    `/namespaces/${target.namespace.id}/agents/${target.agent.id}/native-admin`,
+    { session: delegate.session },
+  );
+  assert.equal(nativeAdmin.status, 403);
+  // Runtime status stays with the operate audience.
+  const status = await fixture.request("GET", target.runtimePath, { session: delegate.session });
+  assert.equal(status.status, 403);
+
+  // Each read is an access event that names the delegated grant, never the text.
+  const [view, downloaded] = accessEvents().filter(({ kind }) => kind === "access");
+  assert.deepEqual(
+    [view, downloaded].map(({ kind, action, outcome, authorization }) => [
+      kind,
+      action,
+      outcome,
+      authorization.action,
+    ]),
+    [
+      ["access", "openclaw.agents.runtime_logs.view", "success", "read_logs"],
+      ["access", "openclaw.agents.runtime_logs.download", "success", "read_logs"],
+    ],
+  );
+  assert.equal(JSON.stringify(accessEvents()).includes("gateway output 1"), false);
+
+  // The grant is still exact-Agent: a sibling Agent's logs are denied.
+  const sibling = await fixture.deployAgent("runtime-log-sibling");
+  const siblingLogs = await fixture.request("GET", sibling.logsPath(), {
+    session: delegate.session,
+  });
+  assert.equal(siblingLogs.status, 403);
+
+  // A read_logs Restriction wins even over administer, so it cannot be bypassed.
+  const both = await fixture.createPrincipal("runtime-log-both", target, [
+    ...logReader,
+    { action: "administer", resourceKind: "agent" },
+  ]);
+  fixture.policy.restrictions.push({
+    id: `restriction-read-logs-${target.agent.id}`,
+    namespaceId: target.namespace.id,
+    action: "read_logs",
+    resourceKind: "agent",
+    resourceId: target.agent.id,
+    effect: "deny",
+  });
+  const reads = driverReads(fixture).length;
+  for (const principal of [delegate, both]) {
+    const restricted = await fixture.request("GET", target.logsPath(), {
+      session: principal.session,
+    });
+    assert.equal(restricted.status, 403);
+    const denial = fixture.auditSink.events.at(-1);
+    assert.equal(denial.kind, "authorization_denial");
+    assert.equal(denial.authorization.action, "read_logs");
+    assert.deepEqual(denial.details.iamEvidence.restrictionIds, [
+      `restriction-read-logs-${target.agent.id}`,
+    ]);
+  }
+  assert.equal(driverReads(fixture).length, reads);
+
+  // Revocation between polls is honoured for the delegated grant too.
+  fixture.policy.restrictions.length = 0;
+  const again = await fixture.request("GET", target.logsPath(), { session: delegate.session });
+  assert.equal(again.status, 200, again.text);
+  delegate.revoke("read_logs", "agent");
+  const revoked = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${encodeURIComponent(again.data.cursor)}`),
+    { session: delegate.session },
+  );
+  assert.equal(revoked.status, 403);
+});
+
+test("an Agent-level read_logs grant covers every revision, including later deployments", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  fixture.computeDriver.state.lines = [runtimeLogLine(1)];
+  // No per-revision grant: log text is delegated on the exact Agent alone.
+  const delegate = await fixture.createPrincipal("runtime-log-agent-only", target, [
+    { action: "read_logs", resourceKind: "agent" },
+    { action: "read", resourceKind: "agent" },
+  ]);
+  const first = await fixture.request("GET", target.logsPath(), { session: delegate.session });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.data.records[0].message, "gateway output 1");
+
+  // A new deployment creates a new revision; the same Agent grant still reads its logs.
+  const redeployed = await fixture.request(
+    "POST",
+    `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deploy`,
+  );
+  assert.equal(redeployed.status, 202, redeployed.text);
+  assert.notEqual(redeployed.data.id, target.revisionId);
+  const secondPath = `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deployments/${redeployed.data.id}/runtime/logs?source=gateway`;
+  const second = await fixture.request("GET", secondPath, { session: delegate.session });
+  assert.equal(second.status, 200, second.text);
+
+  // Runtime status keeps its revision requirement, and a revision of another Agent is
+  // never reachable through this Agent's path.
+  const status = await fixture.request("GET", target.runtimePath, { session: delegate.session });
+  assert.equal(status.status, 403);
+  const sibling = await fixture.deployAgent("runtime-log-agent-only-sibling");
+  const crossed = await fixture.request(
+    "GET",
+    `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deployments/${sibling.revisionId}/runtime/logs?source=gateway`,
+    { session: delegate.session },
+  );
+  assert.notEqual(crossed.status, 200);
+  const reads = driverReads(fixture).length;
+  delegate.revoke("read_logs", "agent");
+  const revoked = await fixture.request("GET", secondPath, { session: delegate.session });
+  assert.equal(revoked.status, 403);
+  assert.equal(driverReads(fixture).length, reads);
+});
+
+test("runtime log cursors bind one principal and view and are re-authorized on every poll", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  const state = fixture.computeDriver.state;
+  state.lines = [runtimeLogLine(1), runtimeLogLine(2)];
+  const viewer = await fixture.createPrincipal("runtime-viewer", target, administerGrants);
+  const other = await fixture.createPrincipal("runtime-other-viewer", target, administerGrants);
+
+  const first = await fixture.request("GET", target.logsPath(), { session: viewer.session });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.data.records.length, 2);
+  const views = () =>
+    fixture.auditSink.events.filter(({ action }) => action === "openclaw.agents.runtime_logs.view");
+  assert.equal(views().length, 1);
+  const view = views()[0];
+  assert.equal(view.kind, "access");
+  assert.equal(view.authorization.action, "administer");
+  assert.equal(view.actor.principalId, viewer.principal.id);
+  assert.deepEqual(
+    { ...view.details.runtimeLogs, viewId: typeof view.details.runtimeLogs.viewId },
+    {
+      viewId: "string",
+      revisionId: target.revisionId,
+      source: "gateway",
+      pod: fixture.computeDriver.podName({ id: target.revisionId }),
+      container: "gateway",
+      previous: false,
+      tailLines: 200,
+    },
+  );
+
+  // A follow poll returns only lines after the cursor and is not re-audited.
+  state.lines = [runtimeLogLine(1), runtimeLogLine(2), runtimeLogLine(3)];
+  const cursor = encodeURIComponent(first.data.cursor);
+  const next = await fixture.request("GET", target.logsPath(`source=gateway&cursor=${cursor}`), {
+    session: viewer.session,
+  });
+  assert.equal(next.status, 200, next.text);
+  assert.deepEqual(
+    next.data.records.map(({ message }) => message),
+    ["gateway output 3"],
+  );
+  assert.ok(driverReads(fixture).at(-1).sinceSeconds >= 1);
+  assert.equal(views().length, 1);
+
+  // A container restart is labelled, never a silent restart of the stream.
+  state.restartCount = 1;
+  state.lines = [runtimeLogLine(4, "after restart")];
+  const replaced = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${encodeURIComponent(next.data.cursor)}`),
+    { session: viewer.session },
+  );
+  assert.equal(replaced.status, 200, replaced.text);
+  assert.deepEqual(
+    replaced.data.records.map(({ type, reason, message }) => (type === "gap" ? reason : message)),
+    ["stream_replaced", "after restart"],
+  );
+  state.previousLines = [runtimeLogLine(0, "before restart")];
+  const previous = await fixture.request("GET", target.logsPath("source=gateway&previous=true"), {
+    session: viewer.session,
+  });
+  assert.equal(previous.status, 200, previous.text);
+  assert.deepEqual(
+    previous.data.records.map(({ message }) => message),
+    ["before restart"],
+  );
+  assert.equal(driverReads(fixture).at(-1).previous, true);
+  // Reusing a view's cursor for another instance selection starts a new audited view.
+  const previousWithCursor = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&previous=true&cursor=${encodeURIComponent(next.data.cursor)}`),
+    { session: viewer.session },
+  );
+  assert.equal(previousWithCursor.status, 200, previousWithCursor.text);
+  assert.equal(views().length, 3);
+
+  // Cursors are bound to the principal, target and signature.
+  const cursorParts = first.data.cursor.split(".");
+  const originalMac = cursorParts[2];
+  const tamperedMac = `${originalMac[0] === "A" ? "B" : "A"}${originalMac.slice(1)}`;
+  const tamperedCursor = `${cursorParts[0]}.${cursorParts[1]}.${tamperedMac}`;
+  assert.equal(
+    Buffer.from(originalMac, "base64url").equals(Buffer.from(tamperedMac, "base64url")),
+    false,
+    "the tamper control must change decoded MAC bytes",
+  );
+  const readsBefore = driverReads(fixture).length;
+  for (const [label, forged, session] of [
+    ["foreign principal", first.data.cursor, other.session],
+    ["tampered", tamperedCursor, viewer.session],
+    ["another source", first.data.cursor.replace("v1.", "v1.e"), viewer.session],
+  ]) {
+    const rejected = await fixture.request(
+      "GET",
+      target.logsPath(`source=gateway&cursor=${encodeURIComponent(forged)}`),
+      { session },
+    );
+    assert.equal(rejected.status, 400, label);
+    assert.equal(rejected.body.error.code, "RUNTIME_LOGS_CURSOR_INVALID", label);
+  }
+  assert.equal(driverReads(fixture).length, readsBefore);
+
+  // Only Pods the Driver listed for this revision reach it.
+  const unknownPod = await fixture.request(
+    "GET",
+    target.logsPath("source=gateway&pod=kube-apiserver-0"),
+    {
+      session: viewer.session,
+    },
+  );
+  assert.equal(unknownPod.status, 400);
+  assert.equal(unknownPod.body.error.code, "RUNTIME_LOGS_POD_INVALID");
+  const unsupported = await fixture.request("GET", target.logsPath("source=gateway&follow=true"), {
+    session: viewer.session,
+  });
+  assert.equal(unsupported.status, 400);
+  assert.equal(driverReads(fixture).length, readsBefore);
+
+  // Revocation between polls is honoured with the same cursor.
+  viewer.revoke("administer", "agent");
+  const revoked = await fixture.request("GET", target.logsPath(`source=gateway&cursor=${cursor}`), {
+    session: viewer.session,
+  });
+  assert.equal(revoked.status, 403);
+  assert.equal(driverReads(fixture).length, readsBefore);
+});
+
+test("minLevel filters log lines on the server and a cursor still resumes after hidden lines", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  const state = fixture.computeDriver.state;
+  const codex = (index, level, fields, span) =>
+    runtimeLogLine(
+      index,
+      JSON.stringify({
+        timestamp: "2026-10-01T07:49:44.100970Z",
+        level,
+        fields,
+        target: span === undefined ? "codex_app_server" : "codex_exec_server::local_file_system",
+        ...(span === undefined ? {} : { span, spans: [] }),
+      }),
+    );
+  state.lines = [
+    codex(1, "INFO", { message: "new" }, { name: "fs.read_file" }),
+    codex(2, "WARN", { message: "retrying model request" }),
+    runtimeLogLine(3, "plain wrapper text"),
+    codex(4, "INFO", { message: "close" }, { name: "fs.read_file" }),
+  ];
+  const views = () =>
+    fixture.auditSink.events.filter(({ action }) => action === "openclaw.agents.runtime_logs.view");
+  const shown = (page) =>
+    page.data.records.map((record) =>
+      record.type === "line" ? `${record.level} ${record.message}` : record.type,
+    );
+
+  const all = await fixture.request("GET", target.logsPath("source=gateway"));
+  assert.equal(all.status, 200, all.text);
+  assert.deepEqual(shown(all), [
+    "debug span new fs.read_file",
+    "warn retrying model request",
+    "unknown plain wrapper text",
+    "debug span close fs.read_file",
+  ]);
+
+  // Lines of unknown level stay: the server cannot tell they are below the floor.
+  const info = await fixture.request("GET", target.logsPath("source=gateway&minLevel=info"));
+  assert.equal(info.status, 200, info.text);
+  assert.deepEqual(shown(info), ["warn retrying model request", "unknown plain wrapper text"]);
+  assert.equal(views().length, 2);
+
+  // A poll at the same level is the same view and resumes after the last line read,
+  // including the hidden debug line, so lowering the level later never replays it.
+  state.lines.push(
+    codex(5, "INFO", { message: "new" }, { name: "fs.get_metadata" }),
+    codex(6, "ERROR", { message: "model request failed" }),
+  );
+  const next = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&minLevel=info&cursor=${encodeURIComponent(info.data.cursor)}`),
+  );
+  assert.equal(next.status, 200, next.text);
+  assert.deepEqual(shown(next), ["error model request failed"]);
+  assert.equal(views().length, 2);
+  const after = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${encodeURIComponent(next.data.cursor)}`),
+  );
+  assert.equal(after.status, 200, after.text);
+  assert.deepEqual(shown(after), []);
+
+  // The download applies the same floor.
+  const download = await fixture.request(
+    "GET",
+    target.logsPath("source=gateway&minLevel=error&download=true"),
+  );
+  assert.equal(download.status, 200, download.text);
+  assert.deepEqual(
+    download.text
+      .trim()
+      .split("\n")
+      .slice(1)
+      .map((line) => line.split(" ").slice(1, 2)[0]),
+    ["UNKNOWN", "ERROR"],
+  );
+
+  const reads = driverReads(fixture).length;
+  const invalid = await fixture.request("GET", target.logsPath("source=gateway&minLevel=unknown"));
+  assert.equal(invalid.status, 400, invalid.text);
+  assert.equal(driverReads(fixture).length, reads);
+});
+
+test("an expired runtime log cursor starts a new audited view with a labelled gap", async () => {
+  const cursorSecret = `runtime-log-expiry-secret-${randomUUID()}`;
+  const fixture = await createRuntimeLogFixture({
+    agentRuntimeLogs: { enabled: true, cursorSecret },
+  });
+  const target = await fixture.deployAgent();
+  fixture.computeDriver.state.lines = [runtimeLogLine(1)];
+  const codec = createRuntimeLogCursorCodec(cursorSecret);
+  const expired = codec.encode(
+    {
+      principalId: fixture.admin.seed.principal.id,
+      agentId: target.agent.id,
+      revisionId: target.revisionId,
+      source: "gateway",
+    },
+    {
+      viewId: "rlv_expired",
+      pod: fixture.computeDriver.podName({ id: target.revisionId }),
+      podUid: fixture.computeDriver.state.podUid,
+      restartCount: 0,
+      previous: false,
+      lastTime: "2026-09-30T10:00:00Z",
+      lastHashes: [],
+      issuedAt: Date.now() - 2 * 60 * 60 * 1000,
+    },
+  );
+  const resumed = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${encodeURIComponent(expired)}`),
+  );
+  assert.equal(resumed.status, 200, resumed.text);
+  assert.deepEqual(
+    resumed.data.records.map(({ type, reason }) => (type === "gap" ? reason : type)),
+    ["cursor_expired", "line"],
+  );
+  assert.equal(
+    fixture.auditSink.events.filter(({ action }) => action === "openclaw.agents.runtime_logs.view")
+      .length,
+    1,
+  );
+});
+
+test("a cursor whose Pod is gone starts a new audited view of the Pod that is read", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  const state = fixture.computeDriver.state;
+  state.lines = [runtimeLogLine(1)];
+  const replacement = "gateway-replacement-0";
+  state.extraPods = [{ name: replacement, uid: "4a1b2c3d-0000-4000-8000-000000000002" }];
+  const views = () =>
+    fixture.auditSink.events.filter(({ action }) => action === "openclaw.agents.runtime_logs.view");
+
+  const first = await fixture.request("GET", target.logsPath(`source=gateway&pod=${replacement}`));
+  assert.equal(first.status, 200, first.text);
+  assert.equal(views().length, 1);
+  assert.equal(views()[0].details.runtimeLogs.pod, replacement);
+
+  // The cursor's Pod disappears; the next poll falls back to the remaining Pod.
+  state.extraPods = [];
+  const next = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${encodeURIComponent(first.data.cursor)}`),
+  );
+  assert.equal(next.status, 200, next.text);
+  assert.equal(next.data.records[0].reason, "stream_replaced");
+  const primary = fixture.computeDriver.podName({ id: target.revisionId });
+  assert.equal(next.data.stream.pod, primary);
+  assert.equal(views().length, 2, "reading another Pod is a new view");
+  assert.equal(views()[1].details.runtimeLogs.pod, primary);
+  assert.notEqual(views()[1].details.runtimeLogs.viewId, views()[0].details.runtimeLogs.viewId);
+
+  // Polls of the new view are not re-audited.
+  const again = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&cursor=${encodeURIComponent(next.data.cursor)}`),
+  );
+  assert.equal(again.status, 200, again.text);
+  assert.equal(views().length, 2);
+});
+
+test("runtime routes reject the Agent draft and unknown revisions without a Driver call", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  fixture.computeDriver.calls.length = 0;
+  const base = `/namespaces/${target.namespace.id}/agents/${target.agent.id}/deployments`;
+  const unknown = target.revisionId.replace(/[0-9a-f]{12}$/, "000000000000");
+  // The editable draft is not a revision: its id fails the route contract.
+  for (const [revision, status, code] of [
+    ["draft", 400, "INVALID_REQUEST"],
+    [unknown, 404, "NOT_FOUND"],
+  ]) {
+    for (const path of [
+      `${base}/${revision}/runtime`,
+      `${base}/${revision}/runtime/logs?source=gateway`,
+    ]) {
+      const response = await fixture.request("GET", path);
+      assert.equal(response.status, status, `${path}: ${response.text}`);
+      assert.equal(response.body.error.code, code);
+    }
+  }
+  assert.equal(fixture.computeDriver.calls.length, 0);
+});
+
+test("contract error details stay within the published path cap and name what a field accepts", async () => {
+  const fixture = await createFixture();
+  await bootstrap(fixture);
+  const namespace = await createNamespace(fixture, "Contract detail tenant");
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const configuration = { kind: "agent", values: {} };
+  const source = { kind: "secret", namespaceId: namespace.id, id: `sec_${randomUUID()}` };
+  const longBinding = "K".repeat(600);
+  let deepValues = {};
+  for (let depth = 0; depth < 26; depth += 1) {
+    deepValues = { ["d".repeat(40)]: deepValues };
+  }
+  const contract = "The request does not match the operation contract: body";
+  const cases = [
+    // A submitted field name too long for the 512-character detail path is cut, as the NUL
+    // check cuts it.
+    [{ ...configuration, ["k".repeat(700)]: 1 }, `/${"k".repeat(511)}`, "UNKNOWN_FIELD"],
+    // The cut keeps whole escapes: no dangling "~".
+    [{ ...configuration, ["~".repeat(300)]: 1 }, `/${"~0".repeat(255)}`, "UNKNOWN_FIELD"],
+    // Keys that the Configuration check refuses are named by a capped path too.
+    [{ kind: "agent", values: { [longBinding]: { prototype: 1 } } }, "/values", "INVALID_VALUE"],
+    // Under a long map key the instance path itself is too long: whole leading segments stay.
+    [
+      { ...configuration, secretBindings: { [longBinding]: { source, extra: 1 } } },
+      "/secretBindings",
+      "UNKNOWN_FIELD",
+    ],
+    [
+      { ...configuration, secretBindings: { [longBinding]: { source: "x" } } },
+      "/secretBindings",
+      "INVALID_TYPE",
+    ],
+    // Leading segments that end exactly at 512 characters all stay.
+    [
+      { ...configuration, secretBindings: { ["K".repeat(496)]: { source, extra: 1 } } },
+      `/secretBindings/${"K".repeat(496)}`,
+      "UNKNOWN_FIELD",
+    ],
+    // The Configuration check's depth limit names a capped path under long keys.
+    [
+      { kind: "agent", values: deepValues },
+      `/values${`/${"d".repeat(40)}`.repeat(12)}`,
+      "TOO_DEEP",
+    ],
+  ];
+  for (const [body, path, code] of cases) {
+    const result = await request(fixture.app, configurations, { body });
+    assert.equal(result.response.status, 400, JSON.stringify(result.payload).slice(0, 200));
+    assert.deepEqual(result.payload.error.details, [{ path, code }]);
+  }
+
+  // A cut path names an ancestor of the offending field, which itself is accepted, so the
+  // message says the problem is inside it. Uncut paths keep naming the field itself.
+  const agents = `/namespaces/${namespace.id}/agents`;
+  const agent = { name: "Contract detail agent", configurationId: `cfg_${randomUUID()}` };
+  const messages = [
+    [
+      configurations,
+      { ...configuration, secretBindings: { [longBinding]: { source, extra: 1 } } },
+      "/secretBindings contains a field that is not accepted.",
+    ],
+    [
+      configurations,
+      { ...configuration, secretBindings: { [longBinding]: { source: "x" } } },
+      "/secretBindings contains a field that has the wrong type (expected object).",
+    ],
+    [
+      configurations,
+      { ...configuration, secretBindings: { [longBinding]: {} } },
+      "/secretBindings or an object under it is missing a required field.",
+    ],
+    [
+      configurations,
+      { ...configuration, secretBindings: { [longBinding]: { source: { ...source, id: "x" } } } },
+      "/secretBindings contains a field that has an invalid format.",
+    ],
+    [
+      configurations,
+      { ...configuration, secretBindings: { [longBinding]: { source: { ...source, kind: "x" } } } },
+      '/secretBindings contains a field that has an unsupported value (expected "secret").',
+    ],
+    [
+      agents,
+      { ...agent, harnessAuth: { method: "api_key", source, [longBinding]: 1 } },
+      "/harnessAuth contains a field that is not accepted.",
+    ],
+    [
+      configurations,
+      { ...configuration, secretBindings: { short: { source, extra: 1 } } },
+      "/secretBindings/short/extra is not an accepted field.",
+    ],
+    [
+      agents,
+      { ...agent, harnessAuth: { method: "api_key", source, extra: 1 } },
+      "/harnessAuth/extra is not an accepted field.",
+    ],
+  ];
+  for (const [route, body, message] of messages) {
+    const result = await request(fixture.app, route, { body });
+    assert.equal(result.response.status, 400, JSON.stringify(result.payload).slice(0, 200));
+    assert.equal(result.payload.error.message, `${contract} ${message}`);
+  }
+
+  // A path too long for the 256-character message cap is cut, never the problem wording,
+  // whether the detail path kept the long key or dropped it.
+  for (const [length, wording] of [
+    [300, " has an invalid format."],
+    // The detail path keeps /secretBindings/<key> and drops the field under it.
+    [494, " contains a field that has an invalid format."],
+  ]) {
+    const key = "K".repeat(length);
+    const result = await request(fixture.app, configurations, {
+      body: { ...configuration, secretBindings: { [key]: { source: { ...source, id: "x" } } } },
+    });
+    assert.equal(result.response.status, 400);
+    const { message } = result.payload.error;
+    assert.equal(Array.from(message).length, 256, message);
+    assert.ok(message.startsWith(`${contract} /secretBindings/KKK`), message);
+    assert.ok(message.endsWith(`…${wording}`), message);
+  }
+  // With several problems the long path is cut, and the short ones and every wording stay.
+  const several = await request(fixture.app, agents, {
+    body: { ...agent, harnessAuth: { method: "x", ["Q".repeat(150)]: 1 } },
+  });
+  assert.equal(several.response.status, 400);
+  const severalMessage = several.payload.error.message;
+  assert.equal(Array.from(severalMessage).length, 256, severalMessage);
+  assert.ok(severalMessage.startsWith(`${contract} /harnessAuth/QQQ`), severalMessage);
+  assert.ok(
+    severalMessage.endsWith(
+      "… is not an accepted field; body /harnessAuth/source is required;" +
+        " body /harnessAuth/sourceId is required; and 2 more.",
+    ),
+    severalMessage,
+  );
+  // Paths that exactly fill the cap stay whole.
+  const exact = await request(fixture.app, agents, {
+    body: { ...agent, harnessAuth: { method: "x", ["Q".repeat(71)]: 1 } },
+  });
+  assert.equal(
+    exact.payload.error.message,
+    `${contract} /harnessAuth/${"Q".repeat(71)} is not an accepted field;` +
+      " body /harnessAuth/source is required; body /harnessAuth/sourceId is required;" +
+      " and 2 more.",
+  );
+  assert.equal(Array.from(exact.payload.error.message).length, 256);
+  // The cap counts characters, not UTF-16 code units: an astral key that fits stays whole,
+  // and a cut keeps whole characters.
+  const room = 256 - `${contract} / is not an accepted field.`.length;
+  for (const [count, shown] of [
+    [150, "\u{1F600}".repeat(150)],
+    [200, `${"\u{1F600}".repeat(room - 1)}…`],
+  ]) {
+    const astral = await request(fixture.app, agents, {
+      body: { ...agent, ["\u{1F600}".repeat(count)]: 1 },
+    });
+    assert.equal(astral.response.status, 400);
+    assert.equal(astral.payload.error.message, `${contract} /${shown} is not an accepted field.`);
+  }
+
+  // A union whose shapes all accept one type names that type, not "one of" a single entry.
+  const wholeBody = await request(
+    fixture.app,
+    `/namespaces/${namespace.id}/channel-directory/lookup`,
+    { body: '"x"' },
+  );
+  assert.equal(wholeBody.response.status, 400);
+  assert.deepEqual(wholeBody.payload.error.details, [{ path: "", code: "INVALID_TYPE" }]);
+  assert.equal(
+    wholeBody.payload.error.message,
+    `${contract} / has the wrong type (expected object).`,
+  );
+  // The method selects the api_key shape, so a problem inside it names what its field accepts.
+  const wrongSource = await request(fixture.app, `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Contract detail agent",
+      configurationId: `cfg_${randomUUID()}`,
+      harnessAuth: { method: "api_key", source: "x" },
+    },
+  });
+  assert.equal(wrongSource.response.status, 400);
+  assert.deepEqual(wrongSource.payload.error.details, [
+    { path: "/harnessAuth/source", code: "INVALID_TYPE" },
+  ]);
+  assert.equal(
+    wrongSource.payload.error.message,
+    `${contract} /harnessAuth/source has the wrong type (expected object).`,
+  );
+
+  // An operation without query parameters or a request body says which one it refused.
+  const query = await request(fixture.app, `/namespaces/${namespace.id}/agents?limit=5`);
+  assert.equal(query.response.status, 400);
+  assert.equal(
+    query.payload.error.message,
+    "The request does not match the operation contract: this operation accepts no query parameters.",
+  );
+  const emptyBody = await request(fixture.app, `/namespaces/${namespace.id}`, {
+    method: "DELETE",
+    body: {},
+  });
+  assert.equal(emptyBody.response.status, 400);
+  assert.equal(
+    emptyBody.payload.error.message,
+    "The request does not match the operation contract: this operation accepts no request body.",
+  );
+  const kept = await request(fixture.app, `/namespaces/${namespace.id}`);
+  assert.equal(kept.response.status, 200);
+  assert.equal(kept.payload.data.id, namespace.id);
+});
+
+test("log polls describe only the requested source and skip Event lists", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  fixture.computeDriver.state.lines = [runtimeLogLine(1)];
+  fixture.computeDriver.state.events = [
+    {
+      type: "Warning",
+      reason: "BackOff",
+      message: "Back-off restarting failed container",
+      count: 1,
+      lastObservedAt: "2026-09-30T11:59:00Z",
+    },
+  ];
+  const status = await fixture.request("GET", target.runtimePath);
+  assert.equal(status.status, 200, status.text);
+  assert.equal(status.data.pods[0].events.length, 1);
+  const logs = await fixture.request("GET", target.logsPath());
+  assert.equal(logs.status, 200, logs.text);
+  const describes = fixture.computeDriver.calls.filter(({ operation }) => operation === "describe");
+  assert.deepEqual(
+    describes.map(({ options }) => options),
+    [{}, { source: "gateway", events: false }],
+  );
+});
+
+test("runtime log failures are fixed, content-free and never read after an audit failure", async () => {
+  const auditSink = new InMemoryAuditSink();
+  const append = auditSink.append.bind(auditSink);
+  let failViews = true;
+  auditSink.append = async (event) => {
+    if (
+      failViews &&
+      (event.action === "openclaw.agents.runtime_logs.view" ||
+        event.action === "openclaw.agents.runtime_logs.download")
+    ) {
+      throw new Error("audit store unavailable");
+    }
+    await append(event);
+  };
+  const fixture = await createRuntimeLogFixture({ auditSink });
+  const target = await fixture.deployAgent();
+  fixture.computeDriver.state.lines = [runtimeLogLine(1, "must not be returned")];
+
+  const unaudited = await fixture.request("GET", target.logsPath());
+  assert.equal(unaudited.status, 503);
+  assert.equal(unaudited.body.error.code, "RUNTIME_LOGS_AUDIT_UNAVAILABLE");
+  assert.equal(unaudited.text.includes("must not be returned"), false);
+  const undownloaded = await fixture.request(
+    "GET",
+    target.logsPath("source=gateway&download=true"),
+  );
+  assert.equal(undownloaded.status, 503);
+  assert.equal(undownloaded.body.error.code, "RUNTIME_LOGS_AUDIT_UNAVAILABLE");
+  assert.equal(undownloaded.text.includes("must not be returned"), false);
+  assert.equal(driverReads(fixture).length, 0);
+  failViews = false;
+
+  const marker = `private-driver-detail-${randomUUID()}`;
+  fixture.computeDriver.state.readError = new Error(marker);
+  const failed = await fixture.request("GET", target.logsPath());
+  assert.equal(failed.status, 503);
+  assert.equal(failed.body.error.code, "RUNTIME_LOGS_UNAVAILABLE");
+  assert.equal(failed.text.includes(marker), false);
+  assert.equal(JSON.stringify(fixture.auditSink.events).includes(marker), false);
+
+  fixture.computeDriver.state.readError = new RuntimeLogsForbiddenByClusterError();
+  const rbac = await fixture.request("GET", target.logsPath());
+  assert.equal(rbac.status, 503);
+  assert.equal(rbac.body.error.code, "RUNTIME_LOGS_CLUSTER_RBAC");
+  fixture.computeDriver.state.readError = undefined;
+
+  fixture.computeDriver.state.describeError = new Error(marker);
+  const status = await fixture.request("GET", target.runtimePath);
+  assert.equal(status.status, 503);
+  assert.equal(status.text.includes(marker), false);
+  fixture.computeDriver.state.describeError = undefined;
+
+  // A hostile Driver description naming a Pod outside the revision is rejected whole.
+  fixture.computeDriver.state.extraPods = [{ name: "Not A Pod!", uid: "x" }];
+  const hostile = await fixture.request("GET", target.runtimePath);
+  assert.equal(hostile.status, 503);
+  assert.equal(hostile.body.error.code, "RUNTIME_LOGS_UNAVAILABLE");
+});
+
+test("runtime log reads are rate limited per principal and Agent with Retry-After", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  let limited;
+  for (let attempt = 0; attempt < 12 && limited === undefined; attempt += 1) {
+    const response = await fixture.request("GET", target.runtimePath);
+    if (response.status === 429) {
+      limited = response;
+    } else {
+      assert.equal(response.status, 200, response.text);
+    }
+  }
+  assert.ok(limited, "the burst of 10 is exhausted within 12 immediate requests");
+  assert.equal(limited.body.error.code, "RUNTIME_LOGS_RATE_LIMITED");
+  assert.match(limited.headers.get("retry-after") ?? "", /^[1-9][0-9]*$/);
+
+  // Authorization runs before the limiter: an unauthorized principal past the burst is
+  // still refused with 403 and audited every time, takes no token and never reaches the
+  // Driver. (A limiter answering first would hide denials behind unaudited 429s.)
+  const outsider = await fixture.createPrincipal("runtime-outsider", target, []);
+  fixture.computeDriver.calls.length = 0;
+  const deniedBefore = fixture.auditSink.events.filter(
+    (event) => event.kind === "authorization_denial" && event.actorId === outsider.principal.id,
+  ).length;
+  const statuses = [];
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (const path of [target.runtimePath, target.logsPath()]) {
+      statuses.push((await fixture.request("GET", path, { session: outsider.session })).status);
+    }
+  }
+  assert.deepEqual(new Set(statuses), new Set([403]));
+  assert.equal(
+    fixture.auditSink.events.filter(
+      (event) => event.kind === "authorization_denial" && event.actorId === outsider.principal.id,
+    ).length - deniedBefore,
+    statuses.length,
+  );
+  assert.equal(fixture.computeDriver.calls.length, 0);
+  // The denials took no token: once granted, the same principal still has its full burst.
+  for (const grant of operateGrants) {
+    const id = `runtime-outsider-${grant.resourceKind}-${grant.action}`;
+    fixture.policy.roles.push({
+      id,
+      namespaceId: target.namespace.id,
+      permissions: [{ action: grant.action, resourceKind: grant.resourceKind }],
+    });
+    fixture.policy.bindings.push({
+      id,
+      namespaceId: target.namespace.id,
+      subjectKind: "identity",
+      subjectId: outsider.principal.id,
+      roleId: id,
+      resourceKind: grant.resourceKind,
+      resourceId: grant.resourceKind === "agent_revision" ? target.revisionId : target.agent.id,
+    });
+  }
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const granted = await fixture.request("GET", target.runtimePath, {
+      session: outsider.session,
+    });
+    assert.equal(granted.status, 200, granted.text);
+  }
+  const operator = await fixture.createPrincipal("runtime-limit-operator", target, operateGrants);
+  const unaffected = await fixture.request("GET", target.runtimePath, {
+    session: operator.session,
+  });
+  assert.equal(unaffected.status, 200, unaffected.text);
+});
+
+test("runtime routes answer 501 when the Driver, its logging owner or the operator switch opts out", async () => {
+  for (const [label, options] of [
+    [
+      "driver-owned logging",
+      { computeDriver: createRuntimeLogComputeDriver({ runtimeLogging: "driver" }) },
+    ],
+    [
+      "no Driver method",
+      { computeDriver: createRuntimeLogComputeDriver({ withoutDescribe: true }) },
+    ],
+    ["feature disabled", { agentRuntimeLogs: { enabled: false, cursorSecret: "x".repeat(32) } }],
+  ]) {
+    const fixture = await createRuntimeLogFixture(options);
+    const target = await fixture.deployAgent();
+    for (const path of [target.runtimePath, target.logsPath()]) {
+      const response = await fixture.request("GET", path);
+      assert.equal(response.status, 501, `${label}: ${path}`);
+      assert.equal(response.body.error.code, "NOT_IMPLEMENTED");
+    }
+    assert.equal(fixture.computeDriver.calls.length, 0, label);
+    if (label === "feature disabled") {
+      // The operator switch is checked before authorization (documented), so a
+      // principal without grants learns only that the feature is off.
+      const outsider = await fixture.createPrincipal("runtime-disabled-outsider", target, []);
+      const response = await fixture.request("GET", target.runtimePath, {
+        session: outsider.session,
+      });
+      assert.equal(response.status, 501);
+      assert.equal(fixture.computeDriver.calls.length, 0);
+    }
+  }
+});
+
+test("runtime log downloads use the log tier and are audited once per download", async () => {
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  fixture.computeDriver.state.lines = [
+    runtimeLogLine(1),
+    runtimeLogLine(2, '{"level":"warn","message":"slow start","subsystem":"gateway","status":503}'),
+  ];
+  const operator = await fixture.createPrincipal("download-operator", target, operateGrants);
+  const administrator = await fixture.createPrincipal(
+    "download-administrator",
+    target,
+    administerGrants,
+  );
+  const downloads = () =>
+    fixture.auditSink.events.filter(
+      ({ action }) => action === "openclaw.agents.runtime_logs.download",
+    );
+  const views = () =>
+    fixture.auditSink.events.filter(({ action }) => action === "openclaw.agents.runtime_logs.view");
+  fixture.computeDriver.calls.length = 0;
+
+  // Status access is not enough; the denial never reaches the Driver.
+  const denied = await fixture.request("GET", target.logsPath("source=gateway&download=true"), {
+    session: operator.session,
+  });
+  assert.equal(denied.status, 403);
+  assert.equal(fixture.auditSink.events.at(-1).kind, "authorization_denial");
+  assert.equal(fixture.auditSink.events.at(-1).authorization.action, "read_logs");
+  // The denial names the download, not a view.
+  assert.equal(fixture.auditSink.events.at(-1).action, "openclaw.agents.runtime_logs.download");
+  assert.equal(driverReads(fixture).length, 0);
+  const deniedDownloads = downloads().length;
+
+  const path = target.logsPath("source=gateway&tailLines=5&download=true");
+  const first = await fixture.request("GET", path, { session: administrator.session });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(first.headers.get("cache-control"), "no-store");
+  const pod = fixture.computeDriver.podName({ id: target.revisionId });
+  assert.equal(
+    first.headers.get("content-disposition"),
+    `attachment; filename="${target.agent.id}-${target.revisionId}-gateway-${pod}.log"`,
+  );
+  const lines = first.text.trimEnd().split("\n");
+  assert.match(lines[0], new RegExp(`^# agent=${target.agent.id} revision=${target.revisionId}`));
+  assert.deepEqual(lines.slice(1), [
+    `${runtimeLogLine(1).time} UNKNOWN text gateway output 1`,
+    `${runtimeLogLine(2).time} WARN openclaw [gateway] slow start status=503`,
+  ]);
+  // A download always reads the maximum tail, whatever the caller asked for.
+  assert.equal(driverReads(fixture).at(-1).tailLines, 1000);
+
+  await fixture.request("GET", path, { session: administrator.session });
+  const granted = () => downloads().filter(({ kind }) => kind === "access");
+  assert.equal(downloads().length, deniedDownloads + 2);
+  assert.equal(granted().length, 2, "every download is audited");
+  assert.equal(views().length, 0, "a download is not a view");
+  const [audit] = granted();
+  assert.equal(audit.kind, "access");
+  assert.equal(audit.actor.principalId, administrator.principal.id);
+  assert.equal(audit.details.runtimeLogs.tailLines, 1000);
+  assert.equal(audit.details.runtimeLogs.pod, pod);
+  assert.equal(JSON.stringify(audit).includes("slow start"), false);
+
+  // A download is a fresh snapshot and never continues a view.
+  const page = await fixture.request("GET", target.logsPath(), { session: administrator.session });
+  const readsBefore = driverReads(fixture).length;
+  const withCursor = await fixture.request(
+    "GET",
+    target.logsPath(`source=gateway&download=true&cursor=${encodeURIComponent(page.data.cursor)}`),
+    { session: administrator.session },
+  );
+  assert.equal(withCursor.status, 400);
+  assert.equal(withCursor.body.error.code, "INVALID_REQUEST");
+  assert.match(withCursor.body.error.message, /\/cursor cannot be combined with \/download/);
+  assert.deepEqual(withCursor.body.error.details, [{ path: "/cursor", code: "INVALID_VALUE" }]);
+  assert.equal(driverReads(fixture).length, readsBefore);
+  assert.equal(granted().length, 2);
+
+  // Failures stay JSON errors with fixed text.
+  fixture.computeDriver.state.readError = new RuntimeLogsForbiddenByClusterError();
+  const rbac = await fixture.request("GET", path, { session: administrator.session });
+  assert.equal(rbac.status, 503);
+  assert.equal(rbac.body.error.code, "RUNTIME_LOGS_CLUSTER_RBAC");
 });

@@ -11,14 +11,11 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
   "sign-in admission keys on the client behind a trusted ingress and ignores other peers' headers",
-  {
-    skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof.",
-  },
+  requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
     let app;
@@ -91,22 +88,25 @@ test(
     await t.test(
       "a flood from one client behind the ingress leaves other clients admitted",
       async () => {
+        // Twenty failed sign-ins per client address, each for a different email.
         const client = { "x-forwarded-for": `1.2.3.4, ${ingress}` };
-        for (let index = 0; index < 10; index += 1) {
+        for (let index = 0; index < 20; index += 1) {
           assert.equal((await guess(ingress, client, index)).statusCode, 401);
         }
-        assert.equal((await guess(ingress, client, 10)).statusCode, 429);
-        assert.equal((await guess(ingress, { "x-forwarded-for": "5.6.7.8" }, 11)).statusCode, 401);
+        const refused = await guess(ingress, client, 20);
+        assert.equal(refused.statusCode, 429);
+        assert.ok(Number(refused.headers["retry-after"]) >= 1);
+        assert.equal((await guess(ingress, { "x-forwarded-for": "5.6.7.8" }, 21)).statusCode, 401);
       },
     );
 
     await t.test("an untrusted peer cannot choose its client address", async () => {
-      for (let index = 0; index < 10; index += 1) {
+      for (let index = 0; index < 20; index += 1) {
         const spoofed = { "x-forwarded-for": `198.51.100.${index}` };
         assert.equal((await guess(outsider, spoofed, index)).statusCode, 401);
       }
       assert.equal(
-        (await guess(outsider, { "x-forwarded-for": "198.51.100.99" }, 10)).statusCode,
+        (await guess(outsider, { "x-forwarded-for": "198.51.100.99" }, 20)).statusCode,
         429,
       );
     });

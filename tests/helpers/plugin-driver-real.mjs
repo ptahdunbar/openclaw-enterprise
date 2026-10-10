@@ -1,4 +1,3 @@
-import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -50,7 +49,6 @@ function selectPluginProofDatabaseUrl({ scenario, databaseUrl }) {
     const scenarioKeys = {
       openclaw: "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL",
       codex_linear: "OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL",
-      codex_calendar: "OCC_TEST_PLUGIN_DRIVER_CODEX_CALENDAR_DATABASE_URL",
       codex_failure: "OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL",
     };
     assert.ok(Object.hasOwn(scenarioKeys, scenario), "unknown real plugin-driver scenario.");
@@ -368,6 +366,7 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
             namespaceId: account.namespaceId,
             serviceAccountId: account.id,
             secretRef,
+            accessToken: imported.accessToken,
           }),
         );
         const result = await controller.transact((unit) =>
@@ -509,7 +508,7 @@ const sessionEvidenceScript = String.raw`
     // Repeated calls share a session; an earlier allowed result cannot prove this turn.
     const start = allRows.findLastIndex((row) => {
       const event = JSON.parse(row.event_json);
-      return event.type === "message" && event.message?.role === "user" && contains(event.message, marker);
+      return event?.type === "message" && event.message?.role === "user" && contains(event.message, marker);
     });
     const rows = start < 0 ? [] : allRows.slice(start);
     const messages = [];
@@ -550,8 +549,9 @@ const sessionEvidenceScript = String.raw`
     }
     for (const row of rows) {
       const event = JSON.parse(row.event_json);
-      eventTypeCounts[event.type ?? "unknown"] = (eventTypeCounts[event.type ?? "unknown"] ?? 0) + 1;
-      if (event.type !== "message") continue;
+      // Non-message rows, including null payloads, cannot establish tool or turn evidence.
+      eventTypeCounts[event?.type ?? "unknown"] = (eventTypeCounts[event?.type ?? "unknown"] ?? 0) + 1;
+      if (event?.type !== "message") continue;
       const message = event.message;
       const hasMarker = contains(message, marker);
       const mirrorIdentity = message?.__openclaw?.mirrorIdentity;
@@ -817,7 +817,7 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${codexLocalAppServerTokenScript}
 (async () => {
   await useLocalPluginRuntimeAppServerToken();
-  const config = await readCodexAppConfiguration();
+  const config = await readCodexPluginConfiguration();
   process.stdout.write(JSON.stringify({
     apps: config?.apps ?? {},
     features: config?.features ?? {},
@@ -883,7 +883,7 @@ function assertDiagnosticText(value, secrets) {
   return text;
 }
 
-function createNativePluginAssertions({
+export function createNativePluginAssertions({
   gatewayUrl,
   execGateway,
   execCodex,
@@ -1233,6 +1233,20 @@ function createNativePluginAssertions({
     );
     assert.equal(evidence.results.length, 1, "the denied call must have a terminal result");
     assert.equal(evidence.results[0].toolCallId, evidence.calls[0].id);
+    if (proofMode === "codex") {
+      const prefix = codexToolTurnPrefix(evidence.calls[0].mirrorIdentity, ":call");
+      assert.ok(
+        prefix && prefix === codexToolTurnPrefix(evidence.results[0].mirrorIdentity, ":result"),
+        "denial must correlate to the attempted native call",
+      );
+      const turn = evidence.codexTurns.find((value) => value.turnPrefix === prefix);
+      assert.ok(
+        turn?.promptSeen &&
+          turn.terminalAssistantSeen &&
+          turn.toolCallMirrorSeen &&
+          turn.toolResultMirrorSeen,
+      );
+    }
     assert.equal(evidence.results[0].isError, true, "denial must prevent a successful native read");
     assert.equal(
       evidence.results[0].deniedByUser,
@@ -1517,7 +1531,7 @@ export async function createPluginDriverRealFixture(
     if (pool !== undefined) {
       await cleanup(() => pool.end());
     }
-    if (gatewayRuntimeNamespace !== undefined) {
+    if (gatewayRuntimeNamespace !== undefined && gatewayRuntimeNamespace !== tenantNamespace) {
       await cleanup(() =>
         kubectl(
           "delete",
@@ -1762,7 +1776,7 @@ export async function createPluginDriverRealFixture(
   });
   assert.equal(createdNamespace.status, 201, JSON.stringify(createdNamespace.error));
   tenantNamespace = kubernetesNamespaceName(createdNamespace.data.id);
-  gatewayRuntimeNamespace = kubernetesGatewayNamespaceName(createdNamespace.data.id);
+  gatewayRuntimeNamespace = kubernetesNamespaceName(createdNamespace.data.id);
   gatewayPlacement = pluginDriverId === "codex-plugin" ? gatewayRuntimeNamespace : tenantNamespace;
   await waitFor(`the worker to create ${tenantNamespace}`, async () => {
     try {
@@ -1812,44 +1826,16 @@ export async function createPluginDriverRealFixture(
     `--clusterrole=${proofPrefix}-secrets-${suffix}`,
     `--serviceaccount=${platformNamespace}:${api.account}`,
   );
-  await waitFor(`Gateway runtime namespace ${gatewayRuntimeNamespace}`, async () => {
-    try {
-      return await resource("namespace", gatewayRuntimeNamespace);
-    } catch (error) {
-      if (isKubernetesNotFound(error)) {
-        return undefined;
-      }
-      throw error;
-    }
-  });
-  for (const role of [`${proofPrefix}-tenant-${suffix}`, `${proofPrefix}-secrets-${suffix}`]) {
-    await kubectl(
-      "create",
-      "rolebinding",
-      `${role}-api`,
-      "--namespace",
-      gatewayRuntimeNamespace,
-      `--clusterrole=${role}`,
-      `--serviceaccount=${platformNamespace}:${api.account}`,
-    );
-  }
-  for (const [role, target] of [
-    [`${proofPrefix}-tenant-${suffix}`, gatewayRuntimeNamespace],
-    [`${proofPrefix}-tenant-pods-${suffix}`, gatewayRuntimeNamespace],
-    [`${proofPrefix}-tenant-pods-proxy-${suffix}`, gatewayRuntimeNamespace],
-    [`${proofPrefix}-secrets-${suffix}`, gatewayRuntimeNamespace],
-    [`${proofPrefix}-secrets-${suffix}`, tenantNamespace],
-  ]) {
-    await kubectl(
-      "create",
-      "rolebinding",
-      `${role}-worker`,
-      "--namespace",
-      target,
-      `--clusterrole=${role}`,
-      `--serviceaccount=${platformNamespace}:${workerIdentity.account}`,
-    );
-  }
+  // The trusted worker delivers runtime projections in the same tenant target.
+  await kubectl(
+    "create",
+    "rolebinding",
+    `${proofPrefix}-worker-secrets`,
+    "--namespace",
+    tenantNamespace,
+    `--clusterrole=${proofPrefix}-secrets-${suffix}`,
+    `--serviceaccount=${platformNamespace}:${workerIdentity.account}`,
+  );
   await waitFor(`namespace ${createdNamespace.data.id} to become API-ready`, async () => {
     const observed = await request("GET", `/namespaces/${createdNamespace.data.id}`);
     assert.equal(observed.status, 200, JSON.stringify(observed.error));

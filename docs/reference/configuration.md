@@ -36,7 +36,9 @@ owns the installed IAM, Compute, and Configuration selection contract. The
 [Backend reference](backends.md) defines the optional `backend` array and its
 required related Driver membership. Backend configuration never enters native
 Agent Configuration documents. The optional `presets.includeDefaults` boolean
-adds bundled Agent Presets to Namespaces; it defaults to `false`. See
+adds bundled Agent Presets to Namespaces; it defaults to `false`. A
+`presets.files` entry named like a bundled default replaces that default with a
+startup warning. See
 [Preset initialization](presets.md#installation-defaults) for permissions,
 restart behavior, and preservation of existing copies.
 
@@ -125,7 +127,26 @@ Additional consumer kinds are reserved for future approved resources and are
 not accepted. `values` must be a JSON object. It can contain the nested objects,
 arrays, strings, finite numbers, booleans, and nulls used by native OpenClaw
 configuration. OCC preserves the native document without interpreting its
-fields or resolving SecretRefs. Agent deployment separately validates supported
+fields or resolving SecretRefs, except that Configuration create and update and
+Agent provisioning check each model provider's `baseUrl` and `api`, and those of
+its `models` entries: `baseUrl` must be an absolute `http` or `https` URL, and
+`api` must be a model API the pinned OpenClaw runtime supports, such as
+`openai-responses`, `openai-completions`, `anthropic-messages`, or `ollama`.
+A blank provider `baseUrl` and values with `${VAR}` references are left to the
+runtime. The `400` names the field as a JSON pointer within `values`.
+
+Create and update also refuse, with the `400` Kubernetes Compute deployment
+gives, an `agents` roster the pinned OpenClaw Gateway rejects on every topology:
+a non-object `agents`, `agents.defaults`, `agents.entries` or entry; any
+`agents.list` except an empty one beside an empty roster; an Agent ID OpenClaw
+rejects, or two it normalizes to one; an entry's `default`; `agents.ownership`
+other than `explicit`; more than one entry without it; or `explicit` with no
+entry. The message names the setting and the rule. A Configuration saved before
+this check still reads, and Kubernetes deployment still refuses it; only a write
+that keeps the roster is refused. SSH Compute deployment does not check rosters.
+Rules that depend on the topology stay at deployment, because a Configuration
+does not fix one: dedicated execution's `main` Agent rules, for example. Agent
+deployment separately validates supported
 runtime selection, topology, and Secret binding ownership before admission.
 Creation requires `create` permission for Configurations in the
 exact parent Namespace. Reads, updates, and deletes require the corresponding
@@ -192,7 +213,9 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
   verify every selected implementation is available.
 - **Configuration create or update returns `400`:** Create with
   `kind: "agent"` and provide a JSON object in `values`. Do not send `kind`,
-  `generation`, or ownership fields in an update.
+  `generation`, or ownership fields in an update. When the message names a
+  `baseUrl` or `api` field, correct that model provider setting; when it names
+  an `agents` setting, fix the roster as it says.
 - **Configuration operation returns `403`:** Verify exact-Namespace `create`
   or exact-Configuration `read`, `update`, or `delete` permission; check the
   selected Kubernetes identity's namespaced ConfigMap Role separately.
@@ -201,6 +224,8 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
 - **Configuration deletion returns `409`:** An Agent still references that
   Configuration. Reassign every referencing Agent, or
   [delete the Agents](agents.md#deletion) and wait for teardown before retrying.
+  A Configuration created by guided Agent provisioning stays referenced until
+  that provisioning succeeds and its Agent selects another Configuration.
 - **Configuration operation returns `503`:** Confirm the selected Driver and
   IAM service are available, Kubernetes authentication and TLS are valid,
   tenant placement is ready, exact namespaced ConfigMap access exists, and the
@@ -225,6 +250,9 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-09 19:20: Dedicated Codex deployment applies the `main` Agent rules too. (fix-969, finding 969)
+- 2026-10-09 19:00: Configuration create and update refuse an `agents` roster every deployment refuses, with deployment's message; topology-dependent rules stay at deployment. (q35-roster-save, finding 874)
 
 - 2026-09-01 08:47: Link Installation Provider definitions separately from native Agent Configuration. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
 

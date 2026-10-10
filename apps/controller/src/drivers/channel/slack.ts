@@ -4,6 +4,7 @@ import type {
   ChannelDriver,
 } from "@openclaw-enterprise/contracts";
 import { ChannelCredentialError, ChannelDirectoryError } from "@openclaw-enterprise/occ";
+import { asRecord } from "@openclaw-enterprise/utils";
 import { isIP } from "node:net";
 import { fetch as undiciFetch, ProxyAgent } from "undici";
 
@@ -19,10 +20,10 @@ const MANAGED_SERVICE_PROXY_ENDPOINT =
 
 type SlackRecord = Record<string, unknown>;
 
-function record(value: unknown): SlackRecord | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as SlackRecord)
-    : undefined;
+function configuredValue(value: unknown): boolean {
+  return typeof value === "string"
+    ? value.trim().length > 0
+    : value !== undefined && value !== null;
 }
 
 function boundedString(value: unknown, maxLength = 200): string | undefined {
@@ -32,7 +33,7 @@ function boundedString(value: unknown, maxLength = 200): string | undefined {
 }
 
 function candidate(value: unknown, kind: "users" | "channels") {
-  const entry = record(value);
+  const entry = asRecord(value);
   if (!entry || entry.deleted === true || entry.is_archived === true) {
     return undefined;
   }
@@ -40,7 +41,7 @@ function candidate(value: unknown, kind: "users" | "channels") {
   if (!id || !(kind === "users" ? /^[UW][A-Z0-9]+$/ : /^[CG][A-Z0-9]+$/).test(id)) {
     return undefined;
   }
-  const profile = record(entry.profile);
+  const profile = asRecord(entry.profile);
   const name = boundedString(entry.name) ?? id;
   const displayName =
     kind === "users"
@@ -54,8 +55,8 @@ function matchesQuery(
   query: string,
   source: unknown,
 ): boolean {
-  const entry = record(source);
-  const profile = record(entry?.profile);
+  const entry = asRecord(source);
+  const profile = asRecord(entry?.profile);
   return (
     query.length === 0 ||
     [
@@ -108,19 +109,27 @@ export class SlackChannelDriver implements ChannelDriver {
     values: Readonly<Record<string, unknown>>,
     withSecret: ChannelCredentialReader,
   ): Promise<void> {
-    const slack = record(record(values.channels)?.slack);
+    const slack = asRecord(asRecord(values.channels)?.slack);
     if (slack === undefined || slack.enabled === false) {
       return;
     }
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    const accounts = record(slack.accounts);
-    const targets =
-      accounts === undefined || Object.keys(accounts).length === 0
-        ? [{ config: slack, path: "/channels/slack" }]
-        : Object.entries(accounts).map(([id, value]) => ({
-            config: { ...slack, ...record(value) },
-            path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
-          }));
+    const accounts = asRecord(slack.accounts);
+    const named = accounts === undefined ? [] : Object.entries(accounts);
+    // OpenClaw still starts an implicit "default" account from the top-level bot and app
+    // tokens when named accounts exist, unless one of them is named "default".
+    const implicitDefault =
+      named.length === 0 ||
+      (!Object.hasOwn(accounts ?? {}, "default") &&
+        configuredValue(slack.botToken) &&
+        (slack.mode === "http" || configuredValue(slack.appToken)));
+    const targets = [
+      ...(implicitDefault ? [{ config: slack, path: "/channels/slack" }] : []),
+      ...named.map(([id, value]) => ({
+        config: { ...slack, ...asRecord(value) },
+        path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+      })),
+    ];
     for (const { config, path } of targets) {
       if (config.enabled === false) {
         continue;
@@ -130,7 +139,7 @@ export class SlackChannelDriver implements ChannelDriver {
           continue;
         }
         const field = `${path}/${role}`;
-        const ref = record(config[role]);
+        const ref = asRecord(config[role]);
         if (
           ref?.source !== "env" ||
           (ref.provider !== undefined && ref.provider !== "default") ||
@@ -182,7 +191,9 @@ export class SlackChannelDriver implements ChannelDriver {
     if (method !== "auth.test") {
       url.search = parameters.toString();
     }
-    let response: Pick<Response, "status" | "ok" | "text">;
+    let response: Pick<Response, "status" | "ok" | "text"> & {
+      readonly body: { cancel(): Promise<void> } | null;
+    };
     try {
       const options = {
         method: method === "auth.test" ? "POST" : "GET",
@@ -200,16 +211,14 @@ export class SlackChannelDriver implements ChannelDriver {
     } catch {
       throw new ChannelDirectoryError("unavailable");
     }
-    if (response.status === 429) {
-      throw new ChannelDirectoryError("rate_limited");
-    }
     if (!response.ok) {
-      throw new ChannelDirectoryError("unavailable");
+      await response.body?.cancel().catch(() => {});
+      throw new ChannelDirectoryError(response.status === 429 ? "rate_limited" : "unavailable");
     }
     let body: SlackRecord | undefined;
     try {
       const content = await response.text();
-      body = content.length <= 2_000_000 ? record(JSON.parse(content)) : undefined;
+      body = content.length <= 2_000_000 ? asRecord(JSON.parse(content)) : undefined;
     } catch {
       throw new ChannelDirectoryError("invalid_response");
     }
@@ -331,7 +340,7 @@ export class SlackChannelDriver implements ChannelDriver {
           candidates.push(found);
         }
       }
-      const nextCursor = record(reply.response_metadata)?.next_cursor;
+      const nextCursor = asRecord(reply.response_metadata)?.next_cursor;
       if (nextCursor !== undefined && typeof nextCursor !== "string") {
         throw new ChannelDirectoryError("invalid_response");
       }

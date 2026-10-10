@@ -5,10 +5,10 @@ Use this reference to configure tenant placement and Kubernetes permissions for 
 ## Kubernetes placement and RBAC
 
 `KubernetesConfigurationDriver` creates exactly one ConfigMap per Configuration
-in the managed control-plane namespace for its exact logical Namespace. The
-Compute Driver creates this target separately from the Harness namespace,
-including when `existingNamespace` selects an operator-owned data-plane target.
-Wait for Namespace readiness and grant API ConfigMap access in the CP target
+in the verified tenant namespace for its exact logical Namespace. Single-cluster
+Compute shares this target with Gateway and Harness workloads, including an
+operator-owned `existingNamespace`. Only the two-cluster profile uses a separate
+control-cluster storage target. Wait for Namespace readiness and grant API ConfigMap access there
 before creating Configuration resources. The ConfigMap remains OCC-owned.
 See [namespace requirements](../drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation).
 Its data contains exactly one entry:
@@ -49,8 +49,11 @@ Configuration or AgentRevision. The Agent gateway mounts this
 snapshot read-only at `/etc/openclaw/openclaw.json`; its environment contains
 only the file path in `OPENCLAW_CONFIG_PATH`. It never mounts the mutable
 Configuration Driver ConfigMap or copies raw configuration into Pod
-environment. A new admitted generation receives a different immutable snapshot
-and rolls the same Agent gateway. Old snapshots remain until Namespace deletion;
+environment. When OpenClaw starts from this read-only file, the startup wrapper
+also sets `OPENCLAW_CONFIG_READONLY=1`, so OpenClaw treats the file as externally
+managed and does not try to write its last-known-good backup beside it. A new
+admitted generation receives a different immutable snapshot and rolls the same
+Agent gateway. Old snapshots remain until Namespace deletion;
 safe earlier garbage collection is not implemented.
 
 Startup validates the selected Configuration Driver's closed schema and
@@ -76,7 +79,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: occ-configuration
-  namespace: <tenant-control-plane-namespace>
+  namespace: <tenant-storage-namespace>
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]

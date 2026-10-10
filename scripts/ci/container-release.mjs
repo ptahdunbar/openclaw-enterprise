@@ -16,13 +16,23 @@ const platforms = ["linux/amd64", "linux/arm64"];
 const shaPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const integerPattern = /^[1-9][0-9]*$/;
+// CI runs the runtime startup tests in two lanes; the release smoke runs their
+// startup files one at a time, since some cases measure timing.
+// container-release.test.mjs pins this list to both lane manifests.
+export const runtimeImageSmokeTests = Object.freeze([
+  "tests/integration/runtime-image-startup.test.mjs",
+  "tests/integration/runtime-image-startup-probe.test.mjs",
+  "tests/integration/runtime-image-gateway-peer.test.mjs",
+  "tests/integration/runtime-image-native-worker.test.mjs",
+  "tests/integration/workspace-files-native.test.mjs",
+]);
 
 export function validateContext(env, repo, workflow = publishWorkflow) {
   assert.equal(env.GITHUB_REPOSITORY, repository, "Only the Enterprise repository may publish.");
   assert.equal(repo.full_name, repository);
   assert.equal(typeof repo.private, "boolean", "Repository privacy must be a boolean.");
   if (workflow !== publishWorkflow || env.PUBLISH !== "false") {
-    assert.equal(repo.private, true, "Publication requires the private Enterprise repository.");
+    assert.equal(repo.private, false, "Publication requires the public Enterprise repository.");
   }
   assert.equal(repo.default_branch, "main");
   assert.equal(env.GITHUB_EVENT_NAME, "workflow_dispatch", "Only manual dispatch is supported.");
@@ -79,10 +89,16 @@ export function ghcrPackageName(image) {
   return image.slice("ghcr.io/openclaw/".length);
 }
 
-export function validatePackage(pkg, image, { allowMissingRepository = false } = {}) {
+export function validatePackage(
+  pkg,
+  image,
+  { allowMissingRepository = false, allowPrivateBootstrap = false } = {},
+) {
   assert.equal(pkg.name, ghcrPackageName(image));
   assert.equal(pkg.package_type, "container");
-  assert.equal(pkg.visibility, "private", "GHCR package must already exist and be private.");
+  // GHCR creates marker packages privately; only bootstrap may accept that state.
+  const visibility = allowPrivateBootstrap ? ["public", "private"] : ["public"];
+  assert.ok(visibility.includes(pkg.visibility), "GHCR package must already exist and be public.");
   // GitHub's package schema makes repository nullable and optional. Absence
   // cannot establish linkage; callers may accept the setup-time package grant.
   // Explicit conflicting metadata always fails.
@@ -90,7 +106,7 @@ export function validatePackage(pkg, image, { allowMissingRepository = false } =
     return false;
   }
   assert.equal(pkg.repository?.full_name, repository, "Link the package to Enterprise first.");
-  assert.equal(pkg.repository?.private, true);
+  assert.equal(pkg.repository?.private, false);
   return true;
 }
 
@@ -269,6 +285,27 @@ export function inspectDigest(reference, authfile) {
     reference,
   ]);
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+export function remoteTagDigest(image, tag, authfile, listed) {
+  try {
+    return inspectDigest(`docker://${image}:${tag}`, authfile);
+  } catch (error) {
+    // Skopeo 1.13.3 reports the registry's MANIFEST_UNKNOWN as this terminal
+    // diagnostic. Auth, transport, name and ambiguous failures must not copy.
+    const missing = `reading manifest ${tag} in ${image}: manifest unknown`;
+    const diagnostic = error.stderr?.toString().trim().replace(/"$/, "");
+    if (
+      listed ||
+      error.status !== 1 ||
+      (diagnostic !== missing &&
+        !diagnostic?.endsWith(`: ${missing}`) &&
+        !diagnostic?.endsWith(`${missing}: manifest unknown`))
+    ) {
+      throw error;
+    }
+    return null;
+  }
 }
 
 // Read the exact blobs named by the OCI index, never an extracted checkout path.
@@ -450,7 +487,10 @@ async function smoke(directory, env) {
       process.execPath,
       [
         "--test",
-        `tests/integration/${env.IMAGE === "controller" ? "production" : "runtime"}-image-startup.test.mjs`,
+        "--test-concurrency=1",
+        ...(env.IMAGE === "controller"
+          ? ["tests/integration/production-image-startup.test.mjs"]
+          : runtimeImageSmokeTests),
       ],
       {
         env: {
@@ -550,25 +590,8 @@ export async function publishPrepared(directory, env, producer, verify, aliasTag
       // Source, CI and visibility may change while large images are being copied.
       await verify();
       const listed = await verifyGhcr(image.destination, image.digest, tag);
-      let remoteDigest;
-      try {
-        remoteDigest = inspectDigest(`docker://${image.destination}:${tag}`, authfile);
-      } catch (error) {
-        // Skopeo 1.13.3 reports the registry's MANIFEST_UNKNOWN as this terminal
-        // diagnostic. Auth, transport, name and ambiguous failures must not copy.
-        const missing = `reading manifest ${tag} in ${image.destination}: manifest unknown`;
-        const diagnostic = error.stderr?.toString().trim().replace(/"$/, "");
-        if (
-          listed ||
-          error.status !== 1 ||
-          (diagnostic !== missing &&
-            !diagnostic?.endsWith(`: ${missing}`) &&
-            !diagnostic?.endsWith(`${missing}: manifest unknown`))
-        ) {
-          throw error;
-        }
-      }
-      if (remoteDigest !== undefined) {
+      const remoteDigest = remoteTagDigest(image.destination, tag, authfile, listed);
+      if (remoteDigest !== null) {
         assert.equal(remoteDigest, image.digest, "Remote source tag has different image bytes.");
       } else {
         skopeo(

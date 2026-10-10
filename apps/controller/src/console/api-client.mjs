@@ -1,7 +1,16 @@
 export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = () => null }) {
   async function request(
     path,
-    { method = "GET", body, signal, expectedStatus, includeMeta = false } = {},
+    {
+      method = "GET",
+      body,
+      signal,
+      expectedStatus,
+      includeMeta = false,
+      responseType = "json",
+      // A session-scoped read that a later view joins instead of aborting it.
+      outlivesView = false,
+    } = {},
   ) {
     const active = lifetime.capture();
     const pinned = sessionKey();
@@ -16,7 +25,7 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       credentials: "same-origin",
       cache: "no-store",
       signal: AbortSignal.any([
-        lifetime.signal,
+        ...(outlivesView ? [] : [lifetime.signal]),
         ...(signal ? [signal] : []),
         AbortSignal.timeout(15_000),
       ]),
@@ -29,6 +38,14 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
     }
     if (response.status === 204 && response.ok && expectedStatus === 204) {
       return undefined;
+    }
+    // Attachments (runtime log downloads) are text; failures stay JSON error envelopes.
+    if (
+      responseType === "text" &&
+      response.status === 200 &&
+      response.headers.get("content-type")?.startsWith("text/plain")
+    ) {
+      return await response.text();
     }
     let payload;
     try {
@@ -47,6 +64,28 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       const code = payload?.error?.code;
       if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) {
         error.code = code;
+      }
+      // The API's own sentence, for views that show it instead of a generic status text.
+      const serverMessage = payload?.error?.message;
+      if (
+        typeof serverMessage === "string" &&
+        serverMessage.length > 0 &&
+        serverMessage.length <= 256 &&
+        !/\p{Cc}/u.test(serverMessage)
+      ) {
+        error.serverMessage = serverMessage;
+      }
+      const detailPaths = Array.isArray(payload?.error?.details)
+        ? payload.error.details
+            .map((detail) => detail?.path)
+            .filter((path) => typeof path === "string" && /^\/[A-Za-z0-9_/~-]{0,128}$/.test(path))
+        : [];
+      if (detailPaths.length > 0) {
+        error.detailPaths = detailPaths;
+      }
+      const retryAfter = response.headers.get("retry-after");
+      if (retryAfter !== null && /^[1-9][0-9]{0,4}$/.test(retryAfter)) {
+        error.retryAfterSeconds = Number(retryAfter);
       }
       const requestId = payload?.meta?.requestId;
       if (

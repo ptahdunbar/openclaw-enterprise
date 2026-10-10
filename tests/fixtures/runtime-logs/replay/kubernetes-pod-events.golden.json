@@ -1,0 +1,69 @@
+{
+  "input": 9,
+  "events": [
+    {
+      "type": "Warning",
+      "container": "gateway",
+      "reason": "Unhealthy",
+      "message": "Readiness probe failed: ",
+      "count": 5,
+      "lastObservedAt": "2026-09-30T14:58:39.000Z"
+    },
+    {
+      "type": "Normal",
+      "container": "gateway",
+      "reason": "Pulled",
+      "message": "Container image \"[redacted:image]\" already present on machine and can be accessed by the pod",
+      "count": 1,
+      "lastObservedAt": "2026-09-30T14:58:32.000Z"
+    },
+    {
+      "type": "Normal",
+      "container": "gateway",
+      "reason": "Created",
+      "message": "Container created",
+      "count": 1,
+      "lastObservedAt": "2026-09-30T14:58:32.000Z"
+    },
+    {
+      "type": "Normal",
+      "container": "gateway",
+      "reason": "Started",
+      "message": "Container started",
+      "count": 1,
+      "lastObservedAt": "2026-09-30T14:58:32.000Z"
+    },
+    {
+      "type": "Normal",
+      "container": "prepare-private-state",
+      "reason": "Pulled",
+      "message": "Container image \"[redacted:image]\" already present on machine and can be accessed by the pod",
+      "count": 1,
+      "lastObservedAt": "2026-09-30T14:58:31.000Z"
+    },
+    {
+      "type": "Normal",
+      "container": "prepare-private-state",
+      "reason": "Created",
+      "message": "Container created",
+      "count": 1,
+      "lastObservedAt": "2026-09-30T14:58:31.000Z"
+    },
+    {
+      "type": "Normal",
+      "container": "prepare-private-state",
+      "reason": "Started",
+      "message": "Container started",
+      "count": 1,
+      "lastObservedAt": "2026-09-30T14:58:31.000Z"
+    },
+    {
+      "type": "Normal",
+      "container": null,
+      "reason": "Scheduled",
+      "message": "Successfully assigned oce-0123456789abcde/gateway-000000000000-0000000000-2fkbx to [redacted:node]",
+      "count": 1,
+      "lastObservedAt": "2026-09-30T14:58:30.638Z"
+    }
+  ]
+}

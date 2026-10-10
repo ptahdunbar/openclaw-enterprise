@@ -31,20 +31,28 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_BASE_URL` — Authentication and cookie origin; required in production; default in development: `http://127.0.0.1:3000`.
 - `OCC_AUTH_GITHUB_CLIENT_ID` — Optional GitHub App client ID, not App ID; selects the provider instance. Requires PostgreSQL, native IAM, and both GitHub settings below; see [GitHub sign-in](../authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
 - `OCC_AUTH_GITHUB_CLIENT_SECRET` — Protected server-side client secret for the configured GitHub App; its private key stays with the repository credential consumer.
-- `OCC_AUTH_GITHUB_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when GitHub or Google sign-in is enabled.
+- `OCC_AUTH_GITHUB_ALLOWED_ORGS` — Optional comma-separated GitHub organization logins; when set (or with the teams), GitHub sign-in requires active membership. See the [allowlist](../authentication/external-sign-in.md#organization-and-team-allowlist).
+- `OCC_AUTH_GITHUB_ALLOWED_TEAMS` — Optional comma-separated `org/team-slug` entries whose active members may use GitHub sign-in; at most 10 entries with the organizations.
+- `OCC_AUTH_GITHUB_RECOVERY_USER_ID` — Existing local password administrator protected for recovery when GitHub, Google or OIDC sign-in is enabled.
+- `OCC_AUTH_PASSWORD_SIGN_IN` — `all` (default) or `recovery-only`, which lets only the recovery account sign in with a password; requires GitHub, Google or OIDC sign-in. See [recovery-only password sign-in](../authentication/external-sign-in.md#recovery-only-password-sign-in).
 - `OCC_AUTH_GOOGLE_CLIENT_ID` — Optional Google OAuth web client ID; selects the provider instance. Requires the client secret and the recovery user ID; see [Google sign-in](../../guides/deploy/google-sign-in.md).
 - `OCC_AUTH_GOOGLE_CLIENT_SECRET` — Protected server-side client secret for the configured Google OAuth client.
 - `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` — Optional comma-separated Google Workspace hosted domains; when set, sign-in requires a matching `hd` claim and a verified email.
-- `OCC_AUTH_TRUSTED_PROXY_CIDRS` — Production-only, off by default: comma-separated CIDRs of the ingress or load balancer in front of the API (never `/0`). Requests from these peers may carry forwarded headers, and sign-in limits key on the client address they report; other peers keep direct-request rules.
+- `OCC_AUTH_OIDC_ISSUER`, `OCC_AUTH_OIDC_AUTHORIZATION_URL`, `OCC_AUTH_OIDC_TOKEN_URL`, `OCC_AUTH_OIDC_JWKS_URL` — Optional generic OIDC issuer and its URLs, copied from the discovery document: `https:` on port 443, one DNS host, no query or fragment. Set all of them with the client ID, client secret and recovery user ID, or none; see [OIDC sign-in](../../guides/deploy/oidc-sign-in.md) and, for Keycloak, [Keycloak sign-in](../../guides/deploy/oidc-keycloak.md).
+- `OCC_AUTH_OIDC_CLIENT_ID`, `OCC_AUTH_OIDC_CLIENT_SECRET` — The OIDC client; with the issuer, they select the provider instance.
+- `OCC_AUTH_OIDC_TOKEN_AUTH` — `client_secret_post` (default) or `client_secret_basic`.
+- `OCC_AUTH_OIDC_DISPLAY_NAME` — Optional Console button label, 1–40 printable characters; default `single sign-on`.
+- `OCC_AUTH_TRUSTED_PROXY_CIDRS` — Production-only, off by default: comma-separated ingress or load balancer CIDRs. IPv4-mapped IPv6 counts as IPv4 (prefix 1–32); entries covering every IPv4 or every IPv6 address are refused. Trusted peers may report client addresses for sign-in limits; see [trusted proxies](../settings/production.md#github-sign-in-and-trusted-proxies).
 - `OCC_AUTH_TRUSTED_PROXY_PRESET` — `ingress-nginx` (default) or `aws` (Application Load Balancer), both reading `X-Forwarded-For`, or `generic`. A Network Load Balancer that preserves client addresses needs no trusted proxy.
 - `OCC_AUTH_CLIENT_IP_HEADER` — Lowercase header carrying the client address, such as `x-real-ip`; required by `generic` only.
 - `OCC_AGENT_NATIVE_ADMIN_ENABLED` — Enables the Agent native admin pilot; default: `false`.
+- `OCC_AGENT_RUNTIME_LOGS_ENABLED` — `false` makes the Agent runtime status and log routes answer `501`; default: `true`. Set by the chart's `agentRuntimeLogs.enabled`.
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required when the pilot is enabled.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
 - `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
 - `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `slackProxy.enabled`.
-- `NODE_EXTRA_CA_CERTS` — Additional Node.js PEM trust bundle for a private OCC or gateway CA; read at process startup.
+- `NODE_EXTRA_CA_CERTS` — Additional Node.js PEM trust bundle for a private OCC, gateway or OIDC IdP CA; read at process startup.
 
 ## PostgreSQL and migrations
 
@@ -84,7 +92,9 @@ the API. It does not use API listener or session-authentication settings. See
 - `OCC_WORKER_LEASE_DURATION_MS` — Claim lease; default: `5000` ms.
 - `OCC_WORKER_MAX_ATTEMPTS` — Maximum work attempts; default: `5`.
 - `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` — Namespace convergence timeout; default: `900000` ms.
+- `OCC_WORKER_DATABASE_TIMEOUT_MS` — Client-side bound on each worker database query; default: `60000` ms.
 - `OCC_WORKER_READINESS_PATH` — Optional absolute path for the readiness marker; packaged probes require it.
+- `OCC_WORKER_LIVENESS_PATH` — Optional absolute path for the run-loop progress marker; the packaged liveness probe checks its age.
 
 ## Local development and Compute
 
@@ -110,13 +120,13 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_REPOSITORY_IMAGE` — Optional matching immutable repository service image for the Kubernetes-only profile.
 - `OCC_DEVELOPMENT_POSTGRES_IMAGE` — Existing local PostgreSQL image for the Kubernetes-only profile; defaults to the pinned PostgreSQL 18.6 image.
 - `OCC_DEVELOPMENT_NODE_BASE_IMAGE` — Immutable Node 24 base used when building the Kubernetes-only OCE controller image.
-- `OCC_DEVELOPMENT_STATE_DIRECTORY` — Private Kubernetes profile state; default: `/tmp/openclaw-development`. Use the same value for cleanup.
+- `OCC_DEVELOPMENT_STATE_DIRECTORY` — Private Kubernetes profile state. When unset, the launching process's temporary directory plus `openclaw-development` (`TMPDIR` if that process set it, otherwise `/tmp` on Linux). Use the same value for cleanup.
 - `OCC_DEVELOPMENT_COMPOSE_PROJECT` — Compose control-plane project's name; default: `openclaw-enterprise-development-kubernetes`. Kubernetes-only mode does not use Compose.
-- `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE` — Kubernetes-only profile's platform Namespace; default: `oce-system`.
+- `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE` — Kubernetes namespace that runs the control plane in the Kubernetes-only profile; default: `oce-system`.
 - `OCC_DEVELOPMENT_KUBERNETES_CLUSTER` — Disposable k3d cluster; default: a generated name beginning with `occ-dev-`.
 - `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` — Kubernetes profile cluster and service readiness timeout; default: `600` seconds per wait in Kubernetes-only mode, `300` in Compose mode.
 - `OCC_DEVELOPMENT_KUBERNETES_API_PORT` — Local Kubernetes API port; default: `6443`.
-- `OCC_DEVELOPMENT_K3D_DNS_RESOLVER` — Optional IPv4 resolver for either local k3d profile.
+- `OCC_DEVELOPMENT_K3D_DNS_RESOLVER` — Optional IPv4 resolver for either local k3d profile, or `k3d` for k3d's default; Linux Docker defaults to the host's upstream resolver.
 - `OCC_DEVELOPMENT_K3S_IMAGE` — K3s node image or channel for Compose control plane without OpenShell; default: `+v1.35`. Kubernetes-only and OpenShell profiles use their pinned image.
 - `OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT` — Disposable cluster disk-pressure threshold; default: `5`.
 - `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART` — Optional absolute OpenShell Gateway chart directory or archive; set it together with the workspace chart override.

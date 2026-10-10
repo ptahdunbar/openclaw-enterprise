@@ -32,23 +32,49 @@ Both profiles enable:
 
 Both profiles give Gateway Pods (embedded or dedicated), Harness Pods, and the
 tenant namespace container default a `100m` CPU request and a four-core (`"4"`)
-CPU limit, with `128Mi` memory requests and `2Gi` memory limits. The limit only
-permits bursts: an embedded OpenClaw Gateway runs a full agent turn as its
-startup model probe, about 16 CPU-seconds of local work, and was ready 24 to 30
-seconds after start at one core against 51 to 72 seconds at `500m`. The probe
-uses about one core, so cores beyond the first serve later work, not startup. The request
-sets the scheduling reservation, so the higher limit reserves no node capacity.
-The trade-off is overcommit: several busy runtimes on one node can each take up
-to four cores from their neighbors, and a `limits.cpu` namespace quota counts
-the whole limit. Profile input cannot change these values; for others, write
-the Installation from the production example (see
+CPU limit. The CPU limit only permits bursts: an embedded OpenClaw Gateway runs
+a full agent turn as its startup model probe, about 16 CPU-seconds of local
+work, and was ready 24 to 30 seconds after start at one core against 51 to 72
+seconds at `500m`. The probe uses about one core, so cores beyond the first
+serve later work, not startup. The CPU request sets the scheduling reservation,
+so the higher limit reserves no node capacity. The trade-off is overcommit:
+several busy runtimes on one node can each take up to four cores from their
+neighbors, and a `limits.cpu` namespace quota counts the whole limit.
+
+Memory requests cover the use measured between turns, so the scheduler reserves
+what each Agent actually holds; limits cover measured peaks:
+
+| Pod                             | Request  | Limit | Measured                                                                                                                                                             |
+| ------------------------------- | -------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gateway (embedded or dedicated) | `1792Mi` | `3Gi` | 1.2 to 1.6 GiB between turns, peaks of 1.8 to 2.2 GiB; a dedicated Codex Gateway serving native admin chat was OOM-killed at `2Gi`                                   |
+| Codex Harness                   | `768Mi`  | `6Gi` | 0.45 to 0.57 GiB between turns, 1 GiB running a test suite, 1.9 GiB running `tsc`; lint, `tsc` and tests together were OOM-killed at `2Gi` and reached a `4Gi` limit |
+| Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                     |
+
+Plan node memory per Agent: an embedded OpenClaw Agent reserves `1792Mi`, and a
+dedicated Codex Agent reserves `2560Mi`: `1792Mi` for its Gateway on the
+`runtime.gatewayNodeSelector` pool and `768Mi` for its Harness on the
+`runtime.nodeSelector` pool. A Harness runs
+the Agent's shell commands, so builds and test suites in large repositories can
+need more than `6Gi`; raise `resources.agent.limits.memory` in the Installation
+for such workloads. Limits reserve no node memory, so Harnesses building at the
+same time on one node can together exhaust it, and the kubelet then evicts Pods
+using more than their requests first; size agents nodes for the turns
+you expect to run concurrently.
+
+Denying the 11 bundled plugins an OpenAI-only Agent does not use
+(`plugins.deny`) saved only about 50 MiB. Profile input cannot change these
+values; for others, write the Installation from the production example (see
 [Images and resources](../../reference/drivers/kubernetes-compute.md#images-and-resources)).
+An existing Installation keeps its values on upgrade; adopted values apply to
+each Agent at its next deployment. Before adopting them, check each agents node's
+free memory: during a rollout the old and new Harness Pods of an Agent can run
+together on one node, because they share its workspace volume.
 
 Seeding both Presets does not change the profile's PluginDriver. An Agent
 created from the other profile's Preset still needs a compatible driver,
 runtime, harness mode, credentials, and channel support.
 
-To seed additional Presets, add `"presets": { "files": ["/app/deploy/presets/devday.json"] }`
+To seed additional Presets, add `"presets": { "files": ["/app/deploy/presets/swe-preset.json"] }`
 to the input JSON and rerender. This example adds **SWE Agent** alongside the
 standard Presets. Both controller processes must be able to read the files at
 startup; the renderer validates the list but does not read container files. See
@@ -65,7 +91,15 @@ then rerender with `repository.enabled: true`.
 
 Create a JSON file outside the repository or under an ignored local output
 directory. The renderer rejects any field it does not consume: unsupported
-fields fail preflight.
+fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
+release-name syntax and be at most 53 characters. Image references in
+`controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
+must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
+casing fails preflight without emitting deployable files. The controller reference
+also follows the chart and bootstrap-volume helper: a letter or digit first,
+then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest. `controlPlane.adminEmail`
+must be an administrator email the bootstrap Job accepts after trim and lowercase:
+one `@` and a dotted domain.
 
 ```json
 {
@@ -102,13 +136,18 @@ fields fail preflight.
 }
 ```
 
+`controlPlane.gatewayClassName` must be a Kubernetes resource name of at most
+253 characters. Use the name of the existing GatewayClass that Envoy Gateway
+serves. `controlPlane.gatewayApiKeySecretName` follows the same Kubernetes
+resource-name rule and must name the dedicated Secret that holds the `occ` key.
+
 For the `codex` profile, merge the reviewed Codex seccomp profile and model
 discovery egress into the base input:
 
 ```json
 {
   "runtime": {
-    "codexSeccompProfile": "openclaw/codex-0.158.0-<profile-sha256>.json"
+    "codexSeccompProfile": "openclaw/codex-0.163.0-alpha.2-<profile-sha256>.json"
   },
   "codex": {
     "modelDiscoveryCidrs": ["198.51.100.20/32"]
@@ -133,9 +172,13 @@ ChatGPT Backend admin credential path:
 }
 ```
 
-Managed issuance is separate from the default `codex_pat` path. The rendered
-Backend and ServiceAccount Driver wiring does not prove that live
-service-account creation works.
+`workspaceId` must be a UUID the controller accepts at startup: version digit
+1–8 and variant 8, 9, a, or b, as in the example. Any other spelling, including
+a nil UUID, is a preflight error. Managed issuance is separate from the default
+`codex_pat` path. The rendered Backend and ServiceAccount Driver wiring does not
+prove that live service-account creation works. Optional `credentialTtlSeconds`
+must be an integer from 1 through 2592000, the lifetime the API accepts; omit it
+to use 2592000.
 
 To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as
@@ -144,16 +187,22 @@ and rejects URLs the controller would reject at startup.
 
 ### External sign-in and trusted proxies
 
-Activation of GitHub or Google sign-in is one-way, so keep these inputs in every
+Activation of GitHub, Google or OIDC sign-in is one-way, so keep these inputs in every
 later rerender. Adding `controlPlane.github` or `controlPlane.google` (`{}` uses
-the chart's Secret defaults) renders `auth.github` or `auth.google` with
+the chart's Secret defaults), or `controlPlane.oidc` with its `issuer`,
+`authorizationUrl`, `tokenUrl` and `jwksUrl` ([OIDC sign-in](oidc-sign-in.md)), renders
+`auth.github`, `auth.google` or `auth.oidc` with
 `enabled: true` and `agentNativeAdmin.enabled: false`; remove
 `agentNativeAdminDomain` and `sharedCookieDomain`. `recoveryUserId` and an HTTPS
-`authBaseUrl` are required. Follow
+`authBaseUrl` are required. Optional `passwordSignIn: "recovery-only"` renders
+[`auth.passwordSignIn`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in);
+preflight lists attaching every ordinary account's identity first. Follow
 [Enable GitHub browser sign-in](production-installation.md#enable-github-browser-sign-in).
 Behind a proxy that adds forwarded headers, such as ingress-nginx, set
 `trustedProxy` ([presets](../../reference/settings/production.md#github-sign-in-and-trusted-proxies));
-it works with or without external sign-in.
+it works with or without external sign-in. Without it, preflight warns (it does
+not fail), because an Installation whose API sees each client's own address, such
+as behind a source-preserving NLB, needs none.
 
 ```json
 {
@@ -169,8 +218,26 @@ it works with or without external sign-in.
 }
 ```
 
-`github` and `google` also accept `clientIdKey` and `clientSecretKey`;
+Client-ID and client-secret Secret keys must differ. Preflight compares custom
+keys with the chart defaults (`client-id` and `client-secret`) when a key is omitted.
+Each provider needs its own Secret, as the chart requires: its `secretName`
+(default `occ-github-login`, `occ-google-login` or `occ-oidc-login`) must not
+name another provider's Secret, `gatewayApiKeySecretName`, the ChatGPT admin
+Secret when `codex.managedServiceAccounts` is set, a repository Secret, or the
+chart's `occ-installation-startup`, `occ-database` and `occ-auth` Secrets.
+`gatewayApiKeySecretName` must also differ from those three chart Secrets and
+from the Gateway TLS (`<release>-agent-gateways-tls` for short release names)
+and root CA (`occ-gateway-<hash>-root`) Secrets the chart generates.
+
+`github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
+and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
+([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));
+`oidc` also accepts `tokenAuth` and `displayName`;
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
+Each `google.allowedDomains` entry must be a lowercase DNS name of at most 253
+characters, such as `example.com`, and its last label must start with a letter.
+Preflight refuses `example.123` and any longer name, which the chart and the API
+also refuse.
 
 If you opt in to repositories, add the broker inputs:
 
@@ -196,11 +263,15 @@ If you opt in to repositories, add the broker inputs:
 upgrade fails until you set it. When upgrading an installation whose broker
 Service has another name, set `serviceName` to that current name so TLS and
 active repository sessions keep working, then switch it deliberately after
-sessions drain.
+sessions drain. A set name must be a DNS-1035 label of at most 63 characters:
+a lowercase letter, then lowercase letters, digits, or hyphens, ending in a
+letter or digit. Preflight refuses any other spelling, which the chart also
+refuses.
 
 ## Render files
 
-Run the renderer from the repository root with Node.js 24 or newer:
+Run the renderer from the repository root with Node.js 24 or newer. With native
+admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh
 node scripts/render-installation-profile.mjs \
@@ -230,15 +301,35 @@ malformed, it exits without writing a preflight report.
 
 Set `OCC_INPUT_DIRECTORY` to the output directory, then complete the
 [production shell and context setup](production-installation.md#configure-the-installation).
+That setup reads the cluster kubeconfig from `$OCC_INPUT_DIRECTORY/kubeconfig`:
+copy it there with mode `0600` first, or render straight into the protected
+directory as the runbook's [profile branch](production-installation.md#recommended-generate-profile-configuration)
+does.
 Skip both configuration-generation branches and continue at the
 [shared bootstrap PVC and configuration checks](production-installation.md#shared-bootstrap-pvc-and-configuration-checks).
 The runbook covers Secret creation, Helm installation, bootstrap key retrieval,
 and authenticated API verification.
 
+If `controlPlane.databaseCa` supplies a CA Secret, omit `mountPath` to use
+`/etc/openclaw/database-ca`, or choose a path distinct from the other active
+database-client mounts. Preflight rejects collisions with platform mounts and,
+when enabled, repository credentials or managed ChatGPT account mounts before
+writing deployment files. See the [rendering flow](../../flows/installation-profile-rendering.md#4-build-helm-values).
+
+`controlPlane.nodeSelector`, `runtime.nodeSelector` and `runtime.gatewayNodeSelector`
+require Kubernetes label keys and label values that are empty or a label name of
+at most 63 characters, matching Helm, bootstrap-volume preparation and Pod
+admission.
+Preflight rejects invalid placement labels before writing deployment files.
+
 If rendering fails or either YAML file is absent, stop and fix the input. Do not
 copy manual examples into the same output directory. Rerender successfully so
 `values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum` stay
 paired.
+
+`runtime.transportSecretPrefix` must form a DNS-safe Kubernetes Secret name after
+`-` and 12 hex characters are appended, with at most 253 characters in total.
+Preflight refuses a prefix that the controller would reject at startup.
 
 ## Required environment checks
 

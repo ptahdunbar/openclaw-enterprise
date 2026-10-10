@@ -1,7 +1,18 @@
 import { button, element } from "../dom.mjs";
-import { message, namespacePath } from "./list.mjs";
+import { message, namespacePath, rejectionMessage } from "./list.mjs";
 
 const discoveryPermissions = [{ action: "read", resourceKind: "namespace" }];
+// People receive `prn_` Principal IDs; emails and other text never name an IAM subject.
+const principalIdPattern = /^prn_[A-Za-z0-9-]{1,196}$/;
+
+function principalIdProblem(value) {
+  if (principalIdPattern.test(value)) {
+    return null;
+  }
+  return value.includes("@")
+    ? "Enter the person’s Principal ID (it starts with prn_), not an email address. Sharing does not look up accounts by email."
+    : "Enter a Principal ID that starts with prn_, exactly as returned when the person was provisioned.";
+}
 const agentPermissions = [
   { action: "read", resourceKind: "agent" },
   { action: "administer", resourceKind: "agent" },
@@ -71,6 +82,8 @@ export function renderAgentAccess(context, agent) {
     bindings: [],
     progress: [],
     error: null,
+    // Set once the API accepts a write in the current change.
+    saved: false,
   };
   section.append(
     element("h2", { id: "agent-access-title" }, "Share Agent"),
@@ -183,16 +196,31 @@ export function renderAgentAccess(context, agent) {
     state.loaded = true;
   }
 
-  function failure(error, mutation) {
+  // OCC answers 400 naming /subjectId or /resourceId when the Principal cannot be bound in
+  // this Namespace or the Agent is being deleted; both mean the same thing to the sharer.
+  function unavailableShareInput(error) {
+    return (
+      error.status === 400 &&
+      (error.detailPaths ?? []).some((path) => path === "/subjectId" || path === "/resourceId")
+    );
+  }
+
+  function failure(error, mutation, sharing = false) {
     if (error.status === 401) {
       context.onExpired();
       return;
     }
     state.needsRefresh = true;
+    // A rejected write shows the API's sentence; once a write in this change was accepted,
+    // later failures keep the generic text.
     state.error =
       error.status === 403
         ? "Sharing policy requires Installation administration. Your other Agent controls remain available according to their own permissions."
-        : message(error, mutation);
+        : sharing && (error.status === 404 || unavailableShareInput(error))
+          ? "No existing person with that Principal ID can be granted access here, or this Agent is no longer available. Check the Principal ID."
+          : mutation && !state.saved
+            ? rejectionMessage(error, mutation)
+            : message(error, mutation);
     state.error += " Refresh sharing to inspect current policy before another change.";
     if (error.requestId) {
       state.error += ` Request ID: ${error.requestId}`;
@@ -208,6 +236,7 @@ export function renderAgentAccess(context, agent) {
     render();
     try {
       await readPolicy();
+      section.hidden = false;
       state.needsRefresh = false;
       state.progress = [
         "Current policy loaded. Listed bindings describe present configuration; they do not confirm a previous request’s outcome.",
@@ -215,7 +244,12 @@ export function renderAgentAccess(context, agent) {
     } catch (error) {
       if (context.isCurrent()) {
         state.loaded = false;
-        failure(error, false);
+        if (error.status === 403) {
+          // Sharing is an Installation administration task; hide it rather than show an error.
+          section.hidden = true;
+        } else {
+          failure(error, false);
+        }
       }
     } finally {
       if (context.isCurrent()) {
@@ -225,10 +259,16 @@ export function renderAgentAccess(context, agent) {
     }
   }
 
+  async function write(url, options) {
+    const result = await context.request(url, options);
+    state.saved = true;
+    return result;
+  }
+
   async function ensureGrant(subjectId, resourceKind, resourceId, permissions, label) {
     let role = state.roles.find((candidate) => matchesRole(candidate, namespaceId, permissions));
     if (!role) {
-      role = await context.request(`${path}/roles`, {
+      role = await write(`${path}/roles`, {
         method: "POST",
         body: { name: label, permissions },
       });
@@ -252,7 +292,7 @@ export function renderAgentAccess(context, agent) {
     if (existing) {
       return;
     }
-    const binding = await context.request(`${path}/access-bindings`, {
+    const binding = await write(`${path}/access-bindings`, {
       method: "POST",
       body: { subjectKind: "identity", subjectId, roleId: role.id, resourceKind, resourceId },
     });
@@ -262,13 +302,14 @@ export function renderAgentAccess(context, agent) {
     state.bindings.push(binding);
   }
 
-  async function mutate(work) {
+  async function mutate(work, sharing = false) {
     if (state.pending || !state.loaded || state.needsRefresh || !context.isCurrent()) {
       return;
     }
     state.pending = true;
     state.error = null;
     state.progress = [];
+    state.saved = false;
     let mutationStarted = false;
     render();
     try {
@@ -278,7 +319,7 @@ export function renderAgentAccess(context, agent) {
       await work();
     } catch (error) {
       if (context.isCurrent()) {
-        failure(error, mutationStarted);
+        failure(error, mutationStarted, sharing && mutationStarted);
       }
     } finally {
       if (context.isCurrent()) {
@@ -290,7 +331,7 @@ export function renderAgentAccess(context, agent) {
 
   function removeBinding(binding) {
     return mutate(async () => {
-      await context.request(`${path}/access-bindings/${encodeURIComponent(binding.id)}`, {
+      await write(`${path}/access-bindings/${encodeURIComponent(binding.id)}`, {
         method: "DELETE",
         expectedStatus: 204,
       });
@@ -308,6 +349,14 @@ export function renderAgentAccess(context, agent) {
     event.preventDefault();
     const subjectId = principal.value.trim();
     if (!subjectId || !acknowledge.checked) {
+      return;
+    }
+    const problem = principalIdProblem(subjectId);
+    if (problem) {
+      state.progress = [];
+      state.error = problem;
+      render();
+      principal.focus();
       return;
     }
     void mutate(async () => {
@@ -331,7 +380,7 @@ export function renderAgentAccess(context, agent) {
         "Agent access is shared. Effective access remains subject to current IAM policy.",
       );
       acknowledge.checked = false;
-    });
+    }, true);
   });
   render();
   void load();

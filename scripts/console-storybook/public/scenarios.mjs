@@ -8,7 +8,9 @@ const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
-const form = [click("Start without Preset")];
+const form = [click("Start with default Preset")];
+const oauthForm = [...form, { selector: "#agent-auth-method", value: "oauth" }];
+const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
 const createModelSecret = (value) => [
   { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
   { selector: "#create-provider-credential-secret-value", value },
@@ -58,7 +60,7 @@ const pluginCapabilities = {
 };
 const pluginSetup = {
   message:
-    "App connection status is not verified. Catalog availability does not confirm linked credentials. In ChatGPT admin, select the same workspace as this PAT and enable plugin and app access for its user or service account. For service-account plugin credentials, open Service accounts, choose the account, and configure its app connections. Workspace administrator access is required. OCE policies do not grant access or configure credentials. Reload plugins after changes.",
+    "App connection status is not verified. Catalog availability does not confirm linked credentials. In ChatGPT admin, select the same workspace as this credential and enable plugin and app access for its user or service account. For service-account plugin credentials, open Service accounts, choose the account, and configure its app connections. Workspace administrator access is required. OCE policies do not grant access or configure credentials. Reload plugins after changes.",
   links: [
     { label: "Manage workspace plugins", url: "https://chatgpt.com/admin/plugins?catalog=GLOBAL" },
     { label: "Service account credentials", url: "https://admin.openai.com/" },
@@ -325,7 +327,7 @@ const createProvisioningSecrets = [
 ];
 const devdayCreateCheckpoint = [
   click("Create Agent"),
-  { selector: "#agent-preset", value: "pre_devday_codex" },
+  { selector: "#agent-preset", value: "pre_swe_codex" },
   { selector: "#preset-variable-name", value: "devday claw" },
   click("Use Preset"),
   { selector: "#provider-credential-secret", value: "sec_devday_model_token" },
@@ -341,8 +343,11 @@ const devdayCreateCheckpoint = [
   { selector: 'select[aria-label="Create issue require approval for"]', value: "all_actions" },
   click("Done"),
   { selector: devdayRepositorySelector, click: true },
-  { selector: "#repository-profile-git-write", click: true },
+  { selector: "#repository-default-git-full", click: true },
+  { selector: ".repository-customize summary", click: true },
+  { selector: "#repository-default-issues", click: true },
   click("Edit Slack"),
+  { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
   { selector: "#slack-channel-access", value: "selected" },
   { selector: "#slack-allowed-user-ids-search", value: "UDEMO123", key: "Enter" },
   { selector: "#slack-secret-slack-app-token", value: "sec_devday_slack_app_token" },
@@ -428,6 +433,9 @@ export const scenarios = {
     githubEnabled: true,
     description:
       "Provider discovery adds Continue with GitHub beside the password form. Clicking it demonstrates an unavailable provider; this fixture never navigates to GitHub.",
+    steps: [
+      "Check the GitHub icon and label, then select the button to see the unavailable message.",
+    ],
     gap: "An administrator must attach the numeric GitHub identity to an existing account through the API. Enrollment, account creation, and recovery administration have no console controls. OAuth navigation and session issuance require backend verification.",
   },
   githubUnavailable: {
@@ -448,6 +456,44 @@ export const scenarios = {
     rules: [{ path: "/api/auth/providers/github/start", method: "POST", status: 429 }],
     actions: [click("Continue with GitHub")],
     description: "Admission refusal asks the user to wait without automatically retrying.",
+  },
+  recoveryOnlyLogin: {
+    group: "Pages/Sign in",
+    name: "Recovery-only password",
+    path: "/console/login",
+    signedOut: true,
+    githubEnabled: true,
+    googleEnabled: true,
+    passwordRecoveryOnly: true,
+    description:
+      "With OCC_AUTH_PASSWORD_SIGN_IN=recovery-only, ordinary accounts continue with GitHub or Google. The password form stays behind Recovery sign-in for the recovery account.",
+  },
+  recoveryOnlyForm: {
+    group: "Pages/Sign in",
+    name: "Recovery sign-in form",
+    path: "/console/login",
+    signedOut: true,
+    githubEnabled: true,
+    passwordRecoveryOnly: true,
+    rules: [{ path: "/api/auth/sign-in/email", method: "POST", status: 401 }],
+    actions: [
+      click("Recovery sign-in"),
+      { selector: "#username", value: "member@example.com" },
+      { selector: "#password", value: "demo-only" },
+      click("Login"),
+    ],
+    description:
+      "Recovery sign-in reveals the password form. A refused password explains that only the recovery account can use one.",
+  },
+  recoveryOnlyCallbackRejected: {
+    group: "Pages/Sign in",
+    name: "Recovery-only GitHub callback rejected",
+    path: "/console/?authError=github",
+    signedOut: true,
+    githubEnabled: true,
+    passwordRecoveryOnly: true,
+    description:
+      "Without a password to fall back on, a rejected callback points the user to an administrator.",
   },
   githubCallbackRejected: {
     group: "Pages/Sign in",
@@ -477,6 +523,9 @@ export const scenarios = {
     googleEnabled: true,
     description:
       "Provider discovery adds Continue with Google beside the password form and any other configured provider. Clicking it demonstrates an unavailable provider; this fixture never navigates to Google.",
+    steps: [
+      "Check the Google and GitHub icons and labels, then select either button to see the unavailable message.",
+    ],
     gap: "An administrator must attach the Google subject identifier to an existing account through the API. Email addresses never match an account. OAuth navigation and session issuance require backend verification.",
   },
   googleUnavailable: {
@@ -496,6 +545,25 @@ export const scenarios = {
     googleEnabled: true,
     description:
       "A rejected Google callback shows the generic sign-in error and keeps password recovery available.",
+  },
+  googleAccountDisabled: {
+    group: "Pages/Sign in",
+    name: "Google account disabled",
+    path: "/console/?authError=google&authReason=account-disabled",
+    signedOut: true,
+    googleEnabled: true,
+    description:
+      "Google authenticated an identity attached to a disabled account, so the page says the account is disabled and names an administrator, not a retry, password or identity attach.",
+  },
+  recoveryOnlyAccountDisabled: {
+    group: "Pages/Sign in",
+    name: "Recovery-only account disabled",
+    path: "/console/?authError=github&authReason=account-disabled",
+    signedOut: true,
+    githubEnabled: true,
+    passwordRecoveryOnly: true,
+    description:
+      "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
   },
   googleResultRejected: {
     group: "Pages/Sign in",
@@ -586,7 +654,7 @@ export const scenarios = {
       "Returning to unchanged pages and Agent tabs preserves loaded controls, expanded panels, and edits. Access is rechecked before page controls become active. Refresh explicitly reloads. Simulated API; no backend persistence proof.",
     steps: [
       "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. The loaded list and search remain visible while reads are pending.",
-      "Visit Namespaces and Settings, then repeat with browser Back and Forward. First visits may load; returning pages retain their content.",
+      "Use Tab to focus Namespaces, then Enter. After loading, its heading has focus and the next Tab reaches Refresh. Back and Forward focus the destination heading while retaining loaded content.",
       "Open an Agent and expand Native configuration. Visit Credentials and Workspace files, then return to Configuration: the disclosure stays expanded. Return to Agents and use Back: native admin access and the selected tab stay loaded through access checks. Refresh explicitly rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
     ],
@@ -754,7 +822,7 @@ export const scenarios = {
     path: "/console/namespaces?namespace=ns_00000000-0000-4000-8000-000000000099",
     description: "Recover from a stale Namespace URL using the selector inside the message.",
     steps: [
-      "Choose Engineering under Choose a valid namespace; the URL changes and the warning disappears without leaving Namespaces.",
+      "Choose Engineering under Choose a valid Namespace; the URL changes and the warning disappears without leaving Namespaces.",
       "Use browser Back to return to the unavailable selection and recover again.",
     ],
   },
@@ -810,7 +878,7 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "OpenAI defaults to Codex. Choose the harness before entering its supported credential; execution mode follows the harness. No model is selected by default.",
+      "OpenAI defaults to Codex with Dedicated execution. Selecting OpenClaw starts in Embedded mode; supported Installations also offer Dedicated under Runtime details. No model is selected by default.",
     steps: [
       "Keep OpenAI and the Codex harness, enter a dummy API key, and select a listed model.",
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
@@ -927,9 +995,9 @@ export const scenarios = {
     description:
       "The actual form lists the first catalog page, places enableable plugins first, and keeps unavailable rows compact with reasons in popovers. Selecting a plugin loads its tools before Add becomes available.",
     steps: [
-      "Review the Driver's workspace access and service account setup guidance. Connection status is unverified; catalog availability does not confirm linked credentials. External help links open separately from plugin navigation.",
+      "Expand Access and credential setup for the full Driver guidance and external help links, then collapse it. The credential/access reminder stays visible; catalog availability does not verify connections.",
       "Open the information button beside each unavailable plugin to compare its administrator, plan, or unsupported-runtime reason and help link. Escape or a click outside dismisses the popover. Choose the plugin row to see the same guidance in detail; Add stays disabled.",
-      "Available and Configured share a compact sidebar; page controls stay below the scrolling list. Next page and Previous page navigate server pages.",
+      "At 390px width and both 844px and 640px height, scroll the plugin list and use Next page and Previous page. Search and pagination remain reachable while the list and details scroll within the dialog.",
       "Choose Calendar to load its tools and inspect their IDs beneath the titles, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
       "Type create into Filter tools: only Create event remains, and the caret stays after the text. Clear it to restore the other tools. Search plugins for Documents before visiting its catalog page, then clear the query.",
       "Click Done and expand Plugin selections JSON: one heading labels a bounded monospace editor. Replacing the dummy token or authentication method clears discovery results and preserves selections.",
@@ -1319,6 +1387,7 @@ export const scenarios = {
     pluginCapabilities,
     pluginCatalog: {
       status: "error",
+      canLoad: true,
       message: "This credential does not have access to the plugin catalog.",
     },
     description:
@@ -1334,6 +1403,7 @@ export const scenarios = {
     pluginCapabilities,
     pluginCatalog: {
       status: "error",
+      canLoad: true,
       message: "The plugin catalog could not be loaded. Try again after restoring connectivity.",
     },
     description: "A simulated catalog failure is shown as an error, not a successful empty result.",
@@ -1346,7 +1416,7 @@ export const scenarios = {
     actions: [click("Configure plugins")],
     pluginCapabilities,
     description:
-      "The component explains that discovery requires an entered service account token with the Codex harness.",
+      "The component explains that discovery requires an entered service account token with the Codex harness. The empty list points to Plugin selections JSON for adding a plugin by ID instead of the unavailable Load plugins.",
   },
   pluginsCapabilitiesUnavailable: {
     group: "Components/Plugins",
@@ -1539,18 +1609,43 @@ export const scenarios = {
     description:
       "The creation form seeds AGENTS.md, SOUL.md, IDENTITY.md, and USER.md before the Agent's first deployment. Clearing a field creates an empty file.",
   },
+  createDedicatedOpenclaw: {
+    group: "Pages/Create Agent",
+    name: "OpenAI with dedicated OpenClaw",
+    path: create,
+    nativeWorkerSupport: "custom-image",
+    actions: [
+      ...readyForm,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+      { selector: "#execution-mode", value: "dedicated" },
+    ],
+    description:
+      "Experimental Dedicated OpenClaw uses the same Agent creation form as Codex. The simulated Installation declares custom-image native worker support. A model and dummy API-key Secret are selected; channel controls remain available.",
+    steps: [
+      "Confirm the Harness is OpenClaw and Execution mode is Dedicated.",
+      "Open the Slack editor, then cancel it. Channel controls remain available for dedicated OpenClaw.",
+      "Select Embedded, then return to Dedicated. Confirm the Harness remains OpenClaw.",
+      "Create the Agent and follow simulated provisioning to Agent details. Open Configuration and confirm the snapshot shows Dedicated execution and the OpenClaw Harness.",
+    ],
+  },
   createEmbedded: {
     group: "Pages/Create Agent",
-    name: "OpenAI with OpenClaw harness",
+    name: "Embedded OpenClaw",
     path: create,
-    actions: [...form, { selector: "#agent-harness", value: "openclaw" }],
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
     description:
-      "OpenClaw remains available for OpenAI with an API key. It uses Embedded execution and disables unsupported channel editing.",
+      "Selecting OpenClaw defaults to Embedded, keeping OpenClaw and its model credential together in the Gateway. Unsupported channel editing remains disabled.",
   },
   createDedicatedOpenclawExperimental: {
     group: "Pages/Create Agent",
     name: "Experimental Dedicated OpenClaw",
     path: create,
+    nativeWorkerSupport: "custom-image",
     actions: [
       ...form,
       { selector: "#agent-harness", value: "openclaw" },
@@ -1558,7 +1653,7 @@ export const scenarios = {
       { selector: "#execution-mode", value: "dedicated" },
     ],
     description:
-      "Dedicated OpenClaw displays its experimental status and runtime-build compatibility requirement before deployment.",
+      "The simulated Installation declares custom-image native worker support. Dedicated OpenClaw displays its experimental status and runtime-build compatibility requirement before deployment.",
     gap: "This simulated form does not verify that a selected OpenClaw runtime image includes native worker-inference support.",
   },
   createRepositoriesSelected: {
@@ -1825,6 +1920,25 @@ export const scenarios = {
     description:
       "A rejected save retains its Configuration. Reload clears stale choices; retry requires a current repository and access level. Starting a new draft explicitly leaves repository-scoped recovery.",
   },
+  createModelFallbackSelection: {
+    group: "Pages/Create Agent",
+    name: "Choose an existing fallback as primary",
+    path: create,
+    modelFallbackSelection: true,
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      click("Use Preset"),
+      { selector: "#agent-model", value: "fallback-one" },
+      { selector: ".launch-advanced summary", click: true },
+    ],
+    description:
+      "Changing the primary removes the unused old model and preserves the ordered fallback references, their model metadata and the existing transport. Simulated UI proof; no model request is executed.",
+    steps: [
+      "Inspect Configuration JSON: primary is openai/fallback-one; the directory contains fallback-one and fallback-two.",
+      "Choose fallback-two as primary. Both referenced model entries and their saved aliases/parameters remain.",
+      "Clear the Model ID, then enter another-model. Existing fallback metadata remains while the new primary is added.",
+    ],
+  },
   createPreset: {
     group: "Pages/Create Agent",
     name: "Preset variables",
@@ -1909,6 +2023,16 @@ export const scenarios = {
     ],
     gap: "All credentials and API responses in this preview are simulated.",
   },
+  createPasswordPresetMissingModel: {
+    group: "Pages/Create Agent",
+    name: "Standard Codex missing model",
+    path: create,
+    standardCodexPreset: true,
+    actions: passwordPresetForm.filter((action) => action.selector !== "#preset-variable-model"),
+    description:
+      "Use Preset with an empty Model stops at the required Model field. Variables with defaults stay optional.",
+    gap: "All credentials and API responses in this preview are simulated.",
+  },
   createPasswordPresetDraft: {
     group: "Pages/Create Agent",
     name: "Standard Codex password draft",
@@ -1958,12 +2082,71 @@ export const scenarios = {
     description:
       "Missing Secret create permission leaves the draft available with its password masked. No Agent is created.",
   },
+  createDefaultPresetLoading: {
+    group: "Pages/Create Agent",
+    name: "Loading default Preset",
+    path: create,
+    rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), hold: true }],
+    description: "Quick-start waits for the authorized Namespace Preset list.",
+  },
+  createDefaultPresetDenied: {
+    group: "Pages/Create Agent",
+    name: "Default Preset access denied",
+    path: create,
+    rules: [{ path: presetSecretsPath.replace(/secrets$/, "presets"), status: 403 }],
+    description:
+      "Denied Preset access leaves quick-start disabled and reports the error. Start without Preset remains available as a separate action.",
+  },
+  createPresetInvalidField: {
+    group: "Pages/Create Agent",
+    name: "Preset with an invalid field",
+    path: create,
+    presetAgent: { executionMode: "turbo" },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Codex assistant" },
+      click("Use Preset"),
+    ],
+    description:
+      "The Preset API saves launch-field errors such as an unknown execution mode. Use Preset names the first field the form cannot use and keeps the chooser open.",
+    gap: "The fixture edits a simulated Preset; Preset CRUD has no console page.",
+  },
+  createCapabilitiesDenied: {
+    group: "Pages/Create Agent",
+    name: "Agent creation needs an administrator",
+    path: create,
+    actions: form,
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A member without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
+    gap: "Namespace IAM cannot grant create; the live check is a member account on a real Installation.",
+  },
+  createCapabilitiesError: {
+    group: "Pages/Create Agent",
+    name: "Capability check failure",
+    path: create,
+    actions: form,
+    rules: [{ path: "/installation", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+    description:
+      "A transient capability-read failure keeps Create Agent disabled and offers Retry capability check.",
+  },
   createNoPresets: {
     group: "Pages/Create Agent",
     name: "No Presets",
     path: create,
     emptyPresets: true,
-    description: "Creation remains available without a Preset.",
+    description:
+      "The default starter is unavailable until an administrator installs a readable Preset. Start without Preset opens an independent form.",
+  },
+  createWithoutPreset: {
+    group: "Pages/Create Agent",
+    name: "Start without Preset",
+    path: create,
+    emptyPresets: true,
+    actions: [click("Start without Preset")],
+    description: "Create an editable Agent draft independently of a saved Preset.",
+    steps: ["Enter an Agent name, choose a model and credential, and review the Configuration."],
+    gap: "The fixture simulates API responses and does not verify deployment.",
   },
   createBoundCredentialPreset: {
     group: "Pages/Create Agent",
@@ -2002,6 +2185,98 @@ export const scenarios = {
     description:
       "Service Accounts authentication is available with the Codex harness and uses the same fixed OpenAI model list. Switching to OpenClaw selects API-key authentication and clears the credential and model selection.",
   },
+  createOAuth: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT OAuth before sign-in (Experimental)",
+    path: create,
+    pluginDiscovery,
+    pluginCapabilities,
+    actions: oauthForm,
+    description:
+      "Experimental first-deploy login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
+  },
+  createOAuthPending: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT device login pending (Experimental)",
+    path: create,
+    oauthPending: true,
+    actions: startOAuthLogin,
+    description:
+      "The user code and provider link are visible while authorization is pending. Cancel login removes this staged login locally.",
+  },
+  createOAuthReady: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT login ready for plugin discovery (Experimental)",
+    path: create,
+    pluginDiscovery,
+    pluginCapabilities,
+    actions: startOAuthLogin,
+    description:
+      "The fixture completes login after one poll. Configure plugins uses the server-owned login reference. No access or refresh token appears in this preview.",
+    steps: [
+      "Wait for ChatGPT login ready, then open Configure plugins and add Calendar.",
+      "Choose a model and create the Agent. Deployment is simulated; the runtime token handoff is not proved here.",
+    ],
+  },
+  createOAuthDenied: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT login permission denied (Experimental)",
+    path: create,
+    rules: [{ suffix: "/device-authorizations", method: "POST", status: 403 }],
+    actions: startOAuthLogin,
+    description:
+      "A denied authorization request leaves the form usable and does not create a browser credential.",
+  },
+  createOAuthUnavailable: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT login unavailable (Experimental)",
+    path: create,
+    rules: [{ suffix: "/device-authorizations", method: "POST", status: 501 }],
+    actions: startOAuthLogin,
+    description:
+      "An Installation whose selected Drivers do not support device login reports it as unavailable. Choose another authentication method; no device code or sign-in link appears.",
+  },
+  createOAuthError: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT login exchange failed (Experimental)",
+    path: create,
+    rules: [{ suffix: "/poll", method: "POST", status: 503 }],
+    actions: startOAuthLogin,
+    description:
+      "A failed poll stops polling. Cancel the staged login and connect again; the console does not retry an uncertain exchange.",
+  },
+  createOAuthExpired: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT device login expired (Experimental)",
+    path: create,
+    oauthExpired: true,
+    actions: startOAuthLogin,
+    description:
+      "An expired device code cannot be used to create the Agent. Cancel it and sign in again.",
+  },
+  pluginsOAuthRevision: {
+    group: "Pages/Agent detail",
+    name: "Separate ChatGPT login for plugin editing (Experimental)",
+    path: `${draft}&tab=plugins`,
+    deployed: true,
+    auth: "oauth",
+    agentPlugins: JSON.parse(pluginSelections),
+    pluginCapabilities,
+    pluginDiscovery,
+    actions: [click("Sign in with OAuth")],
+    description:
+      "A separate configuration login enables plugin browsing while the deployed Agent retains its own credential. Saving plugin selections never replaces authentication.",
+  },
+  authOAuthReconnect: {
+    group: "Components/Credentials",
+    name: "Explicit ChatGPT credential replacement (Experimental)",
+    path: `${draft}&tab=credentials`,
+    deployed: true,
+    auth: "oauth",
+    actions: [click("Sign in with OAuth")],
+    description:
+      "The current Agent login is preserved by default. A completed new login only replaces the saved source when Save authentication source is chosen; deployment remains separate.",
+  },
   createPatToOpenClaw: {
     group: "Pages/Create Agent",
     name: "Switch from Service Accounts to OpenClaw",
@@ -2014,7 +2289,7 @@ export const scenarios = {
       { selector: "#agent-harness", value: "openclaw" },
     ],
     description:
-      "Switching an unsaved service account form to OpenClaw clears the token and model, selects API-key authentication, and uses Embedded execution. Choose or create a simulated API key Secret to continue.",
+      "Switching an unsaved service account form to OpenClaw clears the token and model, selects API-key authentication, and defaults to Embedded execution. Review the selected authentication before continuing.",
   },
   createBoundPatPreset: {
     group: "Pages/Create Agent",
@@ -2052,6 +2327,12 @@ export const scenarios = {
     ],
     description:
       "Enter an explicit model ID when it is absent from the fixed list. The credential must have access to that model; the Console does not verify access.",
+    steps: [
+      "Select Choose a model from the list. Confirm the custom ID is cleared and Choose a model is selected, then select a listed model.",
+      "Select Enter model ID manually again. Confirm Model ID keeps the selected model and receives focus. Edit it to another listed model, then return to the list and confirm that model is selected.",
+      "Repeat the switch and edit Model ID to an ID outside the list. Return to the list and confirm a new selection is required; credentials and other form values remain.",
+      "Under Advanced settings, edit Configuration JSON to use an anthropic/ model. Select Choose a model from the list and confirm it offers Anthropic models.",
+    ],
   },
   createSecretDenied: {
     group: "Pages/Create Agent",
@@ -2132,6 +2413,9 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "First version",
     path: draft,
+    steps: [
+      "Resize through desktop, tablet, and phone widths. Prepare this version keeps each numbered step on its own row, with continuation lines aligned under the step text.",
+    ],
     description:
       "An Agent without a version can edit saved settings and deploy its first immutable version.",
   },
@@ -2233,12 +2517,12 @@ export const scenarios = {
   },
   gatewayPasswordAccess: {
     group: "Pages/Agent detail",
-    name: "Enable Gateway password access",
+    name: "Enable gateway password access",
     path: draft,
     deployed: true,
-    description: "Configure the generated Gateway password without typing native JSON.",
+    description: "Configure the generated gateway password without typing native JSON.",
     steps: [
-      "Select Enable Gateway password access. The draft receives a password reference; no password value is displayed.",
+      "Select Enable gateway password access. The draft receives a password reference; no password value is displayed.",
       "Cancel to discard the edit, or Save Configuration to persist it.",
       "Confirm the saved-access message, then Deploy new version to apply the reference.",
     ],
@@ -2256,7 +2540,7 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "Gateway password save denied",
     path: draft,
-    actions: [click("Enable Gateway password access"), click("Save Configuration")],
+    actions: [click("Enable gateway password access"), click("Save Configuration")],
     rules: [
       {
         method: "PATCH",
@@ -2270,7 +2554,7 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "Gateway password save in progress",
     path: draft,
-    actions: [click("Enable Gateway password access"), click("Save Configuration")],
+    actions: [click("Enable gateway password access"), click("Save Configuration")],
     rules: [
       {
         method: "PATCH",
@@ -2296,6 +2580,8 @@ export const scenarios = {
     steps: [
       "The first catalog page loads in the background when the Plugins tab opens, using the saved Service Accounts token. Open Configure plugins to review Calendar's saved policy.",
       "Open Calendar and inspect the tool IDs beneath their titles. Type create into Filter tools, then clear it; filtering should keep the cursor in the search box.",
+      "In Available, select Calendar, filter tools by create, and expand Create event. Switch to Configured, filter plugins by Calendar, and choose Calendar with a different tool filter. Round-trip the tabs: each keeps its selection, query, tool filter, and expanded rows without another catalog request.",
+      "Remove Calendar from Configured: its details clear even though Available still lists it. Add Calendar again from Available; Configured must not restore the removed detail state.",
       "In Configure plugins, change Calendar's tool policy, add Documents from the next page, and select Done.",
       "Select Save plugin selections, then Deploy new version. Compare the new version with the earlier immutable plugin snapshot.",
     ],
@@ -2506,7 +2792,7 @@ export const scenarios = {
     description:
       "v7 has already been checked and is waiting for another reconciliation. Its last result and timestamp remain distinct from current runtime health.",
     steps: [
-      "Read the pending reason and Last checked time in Deployment activity.",
+      "Read the pending reason and Since time in Deployment activity.",
       "Click Refresh deployment; the simulated pending result remains visible.",
       "View v6 and confirm the latest deployment still describes v7.",
     ],
@@ -2538,11 +2824,47 @@ export const scenarios = {
   deploymentFailed: {
     group: "Pages/Agent detail",
     name: "New version failed",
-    path: candidateVersion,
+    path: currentVersion,
     deployed: true,
     candidateDeploymentStatus: "failed",
     description:
-      "v7 failed before activation; v6 remains selected. The record includes bounded startup failure evidence.",
+      "While viewing current v6, deployment activity reports failed v7 with bounded startup failure evidence. Open v7 Logs selects that failed version and brings its output into view.",
+    steps: [
+      "Select Open v7 Logs in Deployment activity. The version selector changes from v6 to v7 and the Logs tab receives focus and its panel scrolls into view.",
+      "Check the simulated Pod status and operational output, then use Back to return to v6. Browsing leaves v6 selected for service.",
+    ],
+    gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
+  },
+  deploymentFailedLogsFromDraft: {
+    group: "Pages/Agent detail",
+    name: "Failed deployment logs from draft",
+    path: draft,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime/logs",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "The draft has no Logs tab, but failed v7 activity links directly to v7 Logs. Simulated log access is denied and the visible panel explains the required permission.",
+    steps: [
+      "Select Open v7 Logs in Deployment activity. Confirm v7 is viewed, the Logs tab is selected and focused, and its panel scrolls into view.",
+      "Check that the log permission error is visible instead of output; use Back to restore the draft.",
+    ],
+    gap: "The failure and permission denial are simulated UI evidence; they do not establish backend authorization or live log availability.",
+  },
+  deploymentModelProbeFailed: {
+    group: "Pages/Agent detail",
+    name: "New version failed its model check",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    description:
+      "v7 failed its startup model check; the record names the runtime's classified cause (the provider rejected the model or request format) beside the Configuration guidance.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
@@ -2618,6 +2940,120 @@ export const scenarios = {
     actions: [click("Run diagnostics for this version")],
     description:
       "A failed on-demand check reports its own error. The viewed v7 deployment record remains succeeded.",
+  },
+  runtimeLogs: {
+    group: "Pages/Agent detail",
+    name: "Runtime status and logs for v7",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    description:
+      "The Logs tab shows the Gateway Pod, its OOMKilled restart and BackOff Event, then redacted operational output with a withheld-structured-output row. Previous instance is available after the restart.",
+    steps: [
+      "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
+      "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
+      "Expand the runtime.startup_phase row to inspect its fields. The timestamp, level, origin, and message remain aligned in the collapsed rows.",
+      "Select Follow, confirm it changes to Following, then select Following to stop. Resize the preview to 390px and check that controls remain usable and log metadata wraps without clipping messages.",
+    ],
+    gap: "Runtime records and refreshes are simulated UI evidence; source reads, filtering, and following require real backend verification.",
+  },
+  runtimeLogsStartupWarnings: {
+    group: "Pages/Agent detail",
+    name: "Runtime status after a healthy first deploy",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    runtimePod: "startupWarnings",
+    description:
+      "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color.",
+  },
+  runtimeLogsFilteredDownload: {
+    group: "Pages/Agent detail",
+    name: "Runtime logs filtered and downloaded",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    actions: [
+      click("Download"),
+      { selector: ".log-chip.log-level-info", click: true },
+      { selector: "#runtime-log-filter", value: "slack" },
+    ],
+    description:
+      "Download saves the redacted text tail as a .log file through its own audited read. Hiding info and filtering for slack narrows the loaded window to the redacted reconnect warning; the status line counts the hidden rows.",
+    steps: [
+      "Check that info is deselected, the Filter field contains slack, and the visible row keeps its level, origin, and redacted message readable.",
+      "Clear Filter and enable info to restore the loaded rows; the filter status and source retention notice stay visible.",
+    ],
+  },
+  runtimeLogsDenied: {
+    group: "Pages/Agent detail",
+    name: "Runtime logs without administer",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime/logs",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "An Agent operator sees Pod status and Events but no log text. The page names the missing grants and does not request the log view again.",
+    steps: [
+      "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
+    ],
+  },
+  runtimeLogsReaderDownload: {
+    group: "Pages/Agent detail",
+    name: "Runtime logs downloaded by a log reader",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Download")],
+    description:
+      "A log reader without Agent operate has no runtime status or Pod picker. Log text still loads from the source's current Pod, and Download names the saved file after that Pod, as the status line does.",
+  },
+  runtimeLogsReaderNoPodDownload: {
+    group: "Pages/Agent detail",
+    name: "Log reader downloads after the Pod disappears",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    runtimeLogDownloadNoPod: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Download")],
+    description:
+      "Simulated UI: the page retains the last Pod's log text, but the Pod disappears before Download. The fresh download has a valid no-Pod response header, so the saved filename ends in no-pod.log rather than naming the previous Pod.",
+  },
+  runtimeLogsClusterRbac: {
+    group: "Pages/Agent detail",
+    name: "Runtime logs blocked by cluster RBAC",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime/logs",
+        status: 503,
+        code: "RUNTIME_LOGS_CLUSTER_RBAC",
+      },
+    ],
+    description:
+      "The cluster denied pods/log. The page asks the platform operator to enable agentRuntimeLogs in the Helm chart.",
   },
   agentMissing: {
     group: "Pages/Agent detail",
@@ -2772,7 +3208,11 @@ export const scenarios = {
     mobile: true,
     actions: [{ selector: '.content [aria-busy="false"]' }, click("Open navigation")],
     description:
-      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it.",
+      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
+    steps: [
+      "With the drawer open, widen past 760px. Search Agents without pressing Escape; content is active and navigation is no longer trapped.",
+      "Return to 390px. The drawer starts closed; reopen it and press Escape to return focus to Open navigation.",
+    ],
   },
   slack: {
     group: "Components/Channels",
@@ -3429,8 +3869,32 @@ export const scenarios = {
     name: "ChatGPT service account",
     path: `${draft}&tab=credentials`,
     auth: "service",
-    description: "Select an existing issued service account.",
+    description:
+      "Select an issued service account, or switch to an imported Service Accounts token Secret. Both use the same PAT login method.",
     gap: "Service-account issuance is outside the console.",
+  },
+  authServiceEmpty: {
+    group: "Components/Credentials",
+    name: "No issued service accounts",
+    path: `${draft}&tab=credentials`,
+    auth: null,
+    serviceAccountsEmpty: true,
+    actions: [{ selector: "#harness-auth-method", value: "service_account" }],
+    description:
+      "An empty issued-account list cannot be saved. Choose another authentication source.",
+  },
+  authServiceDenied: {
+    group: "Components/Credentials",
+    name: "Issued service accounts unavailable",
+    path: `${draft}&tab=credentials`,
+    auth: "service",
+    rules: [{ suffix: "/service-accounts", method: "GET", status: 403 }],
+    description:
+      "A failed list request preserves the saved account and explains that accounts are unavailable only while issued-account authentication is selected.",
+    steps: [
+      "Switch Authentication source to API key, Service Accounts, and Operator-managed credentials. The issued-account error disappears; each source shows its own fields with consistent styling.",
+      "Return to Issued ChatGPT service account. The unavailable-account feedback and saved account return; the failed lookup does not change its selection.",
+    ],
   },
   nativeAdmin: {
     group: "Components/Native admin",
@@ -3607,7 +4071,7 @@ export const scenarios = {
     steps: [
       "Choose Research assistant, fill Name, then Use Preset.",
       "Review the Configuration, masked pre-existing model Secret reference, and four seeded workspace files; click Create Agent.",
-      "Wait for provisioning to finish; the Console opens Agent details with the queued deployment. Refresh deployment to finish simulated activation, then open Workspace files.",
+      "Wait for provisioning to finish; the Console opens Agent details with the queued deployment. Wait a few seconds or use Refresh deployment to finish simulated activation, then open Workspace files.",
       "Use Versions to inspect the immutable snapshot and Workspace files to inspect runtime files seeded during creation.",
     ],
     gap: "The fixture supplies a ready Namespace, Preset, and model Secret. Set those up outside the console. Verify actual serving health and a model response outside this walkthrough.",
@@ -3621,7 +4085,7 @@ export const scenarios = {
       "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
     steps: [
       "Check the inset arrows on the Namespace, Provider, Harness, and Authentication method controls. Use the controls with a mouse and keyboard.",
-      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: execution becomes Embedded and the API key and selected model remain available.",
+      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: Embedded is selected and channel controls are disabled. Dedicated requires an Installation with native worker support; the separate Dedicated OpenClaw stories simulate that prerequisite.",
       "Select Anthropic: only OpenClaw is available, and the previous provider's credential and model are cleared. Enter a dummy API key and choose a listed model.",
       "Select OpenAI again: Codex is selected by default. Choose Service Accounts, enter a dummy token, and choose a listed model.",
       "Select OpenClaw: authentication changes to API key and the token and model are cleared. Enter a dummy API key and select a model to continue creation.",
@@ -3632,11 +4096,11 @@ export const scenarios = {
     group: "Flows",
     name: "Restart Agent creation",
     path: create,
-    description: "Leave a no-Preset Agent form and return to the initial creation choices.",
+    description: "Leave a default starter Agent form and return to the initial creation choices.",
     steps: [
-      "Choose Start without Preset and enter an Agent name.",
+      "Choose Start with default Preset and enter an Agent name.",
       "Select Cancel or the Agents link, then choose Create Agent again.",
-      "Confirm the initial choices are shown. Start without Preset again and check that the name is empty.",
+      "Confirm the initial choices are shown. Start with default Preset again and check that the name is empty.",
     ],
     gap: "The fixture demonstrates simulated console state; it does not verify a live backend or deployment.",
   },
@@ -3647,9 +4111,9 @@ export const scenarios = {
     emptyAgents: true,
     transport: false,
     description:
-      "Create a Dedicated Agent from the no-Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
+      "Create a Dedicated Agent from the default Preset form after editing IDENTITY.md and clearing USER.md, then inspect the seeded workspace after simulated provisioning.",
     steps: [
-      "Start without Preset, enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose a listed model or enter a model ID manually.",
+      "Start with default Preset, enter a demo Agent name, keep OpenAI with the Codex harness, enter a dummy API key or service account token, and choose a listed model or enter a model ID manually.",
       "Review AGENTS.md, SOUL.md, IDENTITY.md, and USER.md. Edit IDENTITY.md, leave USER.md empty, and create the Agent.",
       "Wait for automatic provisioning and deployment activation; the Console then opens Workspace files for the returned revision.",
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",
@@ -3676,7 +4140,7 @@ export const scenarios = {
     description:
       "Guided create-form state with one existing simulated Slack Secret and one newly created simulated Secret staged into the Agent Configuration.",
     steps: [
-      "Start without Preset and enter the Agent name.",
+      "Start with default Preset and enter the Agent name.",
       "Open Configure Slack, choose the existing Slack app Secret, create a new Slack bot Secret from the modal, and allow everyone in the selected channel.",
       'Apply channel settings. The form receives channel JSON with users: ["*"] and Secret binding JSON while token values stay hidden.',
       "Create the Agent to persist the Configuration and let the controller grant the Agent access to the staged Slack Secrets.",
@@ -3693,7 +4157,7 @@ export const scenarios = {
     slackChannels: { COPENCLAWFEEDBACK: { requireMention: true, users: ["UDEMO123"] } },
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
-    devdayPreset: true,
+    swePreset: true,
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
     fixturePluginCatalog: true,
@@ -3730,12 +4194,12 @@ export const scenarios = {
       "DevDay create-flow rehearsal using real Console controls with fake service-account and Slack Secret data. Provisioning and deployment progress are simulated in the Storybook fixture.",
     steps: [
       "Start on the Agents list with the already deployed oceclaw seed, then click Create Agent.",
-      "The picker includes SWE Agent, Community Agent, Q&A Agent, and Oncall Agent. Select SWE Agent and enter devday claw for its name.",
+      "The picker includes SWE Agent, Standard Codex, and Standard OpenClaw. Select SWE Agent and enter devday claw for its name.",
       "Keep the default gpt-6-astra model and click Use Preset. Choose the existing DevDay Codex service account (simulated) Secret, or explicitly create a new simulated Secret. No credential is preselected. Review AGENTS.md: its opening sentence now says You are devday claw. Workspace defaults remain editable.",
       "Open Configure plugins. The simulated curated catalog is available for every Preset and Secret choice in this Storybook flow; add Linear, set Linear default reviewer to Automatic review, and set Create issue approval to Ask for approval.",
-      "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access.",
-      "Open Edit Slack. Confirm the six prefilled channels: oce-feedback (C0C49E7CS4A), oce-team (C0C43A2QA11), oce-feedback-test (C0C569NN9ME), oce-team-test (C0C4A0JH2BG), oce-community (C0C5KF0JLSC), and oce-community-test (C0C5KF0DWLQ); mentions are not required. Allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
-      "Create Agent and wait for provisioning to open Agent details. Inspect Deployment activity and use Refresh deployment to finish simulated activation.",
+      "Repository access offers openclaw/openclaw-enterprise and openclaw/openclaw. Select either or both with Contributor access, then turn off issue management to match the approved profiles.",
+      "Open Edit Slack. Confirm no channels are prefilled. Add the simulated channel CDEMO123. Allow simulated user UDEMO123, then bind the existing simulated DevDay Slack Secrets and apply settings.",
+      "Create Agent and wait for provisioning to open Agent details. Inspect Deployment activity; it finishes simulated activation after a few seconds, or use Refresh deployment.",
       "Use ← Agents and open oceclaw in the same fixture to continue segment 2. The next-segment link starts an independent resettable fixture.",
     ],
     gap: "This Storybook flow proves only the UI sequence and fixture state. It does not store a real credential, deploy a workload, prove GitHub authorization, or prove Slack delivery.",
@@ -3750,7 +4214,7 @@ export const scenarios = {
     slackChannels: { COPENCLAWFEEDBACK: { requireMention: true, users: ["UDEMO123"] } },
     nativeAdmin: "available",
     nativeAdminUrl: "/storybook-fixtures/devday-admin.html?agent=oceclaw&channel=openclaw-feedback",
-    devdayPreset: true,
+    swePreset: true,
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
     fixturePluginCatalog: true,

@@ -1,0 +1,28 @@
+{"time":"2026-09-30T12:00:00.001+00:00","level":"info","subsystem":"gateway/http","message":"GET /v1/hooks/slack?token={{QUERY_TOKEN}}&sig={{SIGNATURE}} 200","method":"GET","url":"https://hooks.example.invalid/callback?code={{QUERY_TOKEN}}#{{FRAGMENT}}","status":200}
+{"time":"2026-09-30T12:00:00.002+00:00","level":"debug","subsystem":"agent/embedded","message":"turn started","prompt":"{{PROMPT}}","content":"{{CONTENT}}","messages":[{"role":"user","text":"{{CONTENT}}"}],"__proto__":{"polluted":"{{PROTO}}"},"agent_id":"main"}
+{"time":"2026-09-30T12:00:00.003+00:00","level":"error","subsystem":"providers/openai","message":"request failed for key {{OPENAI_KEY}}: 401"}
+{"time":"2026-09-30T12:00:00.004+00:00","level":"warn","subsystem":"config","message":"loaded override {\"api_key\": \"{{API_KEY}}\", \"model\": \"gpt\"}"}
+git clone https://x-access-token:{{INSTALLATION_TOKEN}}@github.com/example/private-repo.git /workspace/repo
+curl -sS -H 'Authorization: Bearer {{BEARER}}' -H "Cookie: session={{COOKIE}}" https://api.example.invalid/v1/items
+database login failed for user=admin password={{PASSWORD}} host=db.internal
+occ-helper --password {{CLI_PASSWORD}} --verbose
+aws credentials from environment {{AWS_KEY}}
+resolved commit {{HEX40}} for branch main
+using bearer {{JWT}} for upstream
+-----BEGIN PRIVATE KEY-----{{PEM_BODY}}-----END PRIVATE KEY-----
+pushing with {{GITHUB_PAT}} to origin
+HTTP:GET https://files.example.invalid/object?X-Amz-Signature={{SIGNATURE}}&X-Amz-Credential={{API_KEY}}
+curl -sS -u admin:{{ARGV_PASSWORD}} https://api.example.invalid/v1
+hf token {{HF_TOKEN}} loaded
+stripe {{STRIPE_KEY}} rejected
+Proxy auth Basic {{BASIC}}
+machine github.com login bob password {{NETRC_PASSWORD}}
+MY_SERVICE_KEY={{SERVICE_KEY}}
+{"time":"2026-09-30T12:00:00.005+00:00","level":"warn","subsystem":"channels","message":"retry","code":"{{STRIPE_KEY}}","session_id":"curl -u ops:{{ARGV_PASSWORD}}","channel":"{{HF_TOKEN}}"}
+{"time":"2026-09-30T12:00:00.006+00:00","level":"info","message":"{{REPLY}}"}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"t1","delta":"{{RPC}}"}}
+{"jsonrpc":"2.0","id":7,"result":{"items":[{"type":"message","text":"{{RPC}}"}]}}
+{"timestamp":"2026-09-30T12:00:00.100Z","level":"WARN","target":"codex_core::responses_retry","fields":{"message":"stream connection failed; waiting to retry","prompt":"{{CODEX_PROMPT}}","attempt":2}}
+{"timestamp":"2026-09-30T12:00:00.101Z","level":"WARN","target":"codex_core::event_mapping","fields":{"message":"Output text in user message: {{CODEX_CHAT}}"}}
+{"event":"runtime.startup_phase","container":"gateway","phase":"config","outcome":"ok","ms":12,"sinceStartMs":40,"note":"{{WRAPPER_EXTRA}}"}
+{"message": "{{MALFORMED}}", "level": "info"

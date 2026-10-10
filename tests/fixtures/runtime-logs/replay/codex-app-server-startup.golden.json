@@ -1,0 +1,560 @@
+{
+  "input": 35,
+  "withheld": 0,
+  "records": [
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.600000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "text",
+      "level": "unknown",
+      "message": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/home/node/.codex\"))"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.608866000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "error",
+      "message": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#[redacted:fragment] Codex will use the bundled bubblewrap in the meantime.",
+      "subsystem": "codex_app_server"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.608866000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "text",
+      "level": "unknown",
+      "message": "codex app-server (WebSockets)"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.608866000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "text",
+      "level": "unknown",
+      "message": "  listening on: ws://127.0.0.1:19999"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.608866000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "text",
+      "level": "unknown",
+      "message": "  readyz: http://127.0.0.1:19999/readyz"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.608866000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "text",
+      "level": "unknown",
+      "message": "  healthz: http://127.0.0.1:19999/healthz"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.608866000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "text",
+      "level": "unknown",
+      "message": "  note: binds localhost only (use SSH port-forwarding for remote access)"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.626343000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "app-server websocket listening on ws://127.0.0.1:19999",
+      "subsystem": "codex_app_server_transport::transport::websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.630970000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "app-server remote control websocket loop started",
+      "subsystem": "codex_app_server_transport::transport::remote_control::websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.631486000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "starting app-server remote control websocket connection cycle",
+      "subsystem": "codex_app_server_transport::transport::remote_control::websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.634269000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "Reloading auth",
+      "subsystem": "codex_login::auth::manager"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.634766000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "Reloaded auth, changed: false",
+      "subsystem": "codex_login::auth::manager"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.635209000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "waiting to resolve remote control preference until authentication is available",
+      "subsystem": "codex_app_server_transport::transport::remote_control::websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.672114000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span new fs.read_file",
+      "subsystem": "codex_exec_server::local_file_system"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.674022000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span enter fs.read_file",
+      "subsystem": "codex_exec_server::local_file_system"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.674354000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span exit fs.read_file",
+      "subsystem": "codex_exec_server::local_file_system"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.674627000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span close fs.read_file",
+      "subsystem": "codex_exec_server::local_file_system"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.679125000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span new list_models",
+      "subsystem": "codex_models_manager::manager"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.679153000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span enter list_models",
+      "subsystem": "codex_models_manager::manager"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.680473000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span exit list_models",
+      "subsystem": "codex_models_manager::manager"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.680511000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span close list_models",
+      "subsystem": "codex_models_manager::manager"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.684714000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "using system root certificates because no CA override environment variable was selected",
+      "subsystem": "codex_http_client::custom_ca"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.687329000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span new fs.get_metadata",
+      "subsystem": "codex_exec_server::local_file_system"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.687491000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span enter fs.get_metadata",
+      "subsystem": "codex_exec_server::local_file_system"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.687544000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span exit fs.get_metadata",
+      "subsystem": "codex_exec_server::local_file_system"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.687889000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "span close fs.get_metadata",
+      "subsystem": "codex_exec_server::local_file_system"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:15.894596000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "warn",
+      "message": "failed to warm featured plugin ids cache",
+      "subsystem": "codex_core_plugins::manager"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:18.996206000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "warn",
+      "message": "ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters",
+      "subsystem": "codex_core_plugins::manifest"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:22.788501000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "received shutdown signal; entering graceful restart drain (connections=0, runningAssistantTurns=0, new client turns rejected)",
+      "subsystem": "codex_app_server"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:22.788622000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "shutdown signal restart: no assistant turns running; stopping acceptor and disconnecting 0 connection(s)",
+      "subsystem": "codex_app_server"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:22.790069000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "websocket acceptor shutting down",
+      "subsystem": "codex_app_server_transport::transport::websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:22.790342000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "app-server remote control websocket loop exited",
+      "subsystem": "codex_app_server_transport::transport::remote_control::websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:22.790532000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "processor task exited",
+      "subsystem": "codex_app_server"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:22.790884000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "disconnecting 0 outbound websocket connection(s) for graceful restart",
+      "subsystem": "codex_app_server"
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:22.803596000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "outbound router task exited (channel closed)",
+      "subsystem": "codex_app_server"
+    }
+  ]
+}

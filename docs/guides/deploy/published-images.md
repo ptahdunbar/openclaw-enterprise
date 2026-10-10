@@ -6,23 +6,15 @@ checkout and chart that match those images. This procedure works for
 [production installation](production-installation.md#use-published-images).
 Run it before generating Installation configuration.
 
-You need Bash, Docker, Git, an existing repository checkout, and permission to
-pull the private GHCR packages. The deployment tools use immutable image
-references internally; the commands below resolve the selected tags so you do
-not need to find or copy a SHA manually.
+You need Bash, Docker, Git, and an existing repository checkout. The published
+GHCR packages are public. The deployment tools use immutable image references
+internally; the commands below resolve the selected tags so you do not need to
+find or copy a SHA manually.
 
 ## Pull the latest pair
 
-Both packages require repository-inherited read access. Authenticate with a
-GitHub personal access token (classic) with `read:packages` and required
-organization SSO. Replace the username and enter the token only at Docker's
-password prompt:
-
-```bash
-docker login ghcr.io --username '<your-github-username>'
-```
-
-From a Bash shell in the repository root, select and pull both images. Run the
+From a Bash shell in the repository root, select and pull both images
+anonymously. Run the
 whole block; it clears earlier selections and exports them only after both pulls
 and revision checks succeed:
 
@@ -50,8 +42,13 @@ else
 fi
 ```
 
-Stop if selection fails. The two aliases are not updated atomically; retry both
-pulls after publication completes if they refer to different source revisions.
+Stop if selection fails. If an anonymous pull fails with `unauthorized` or
+`denied`, the packages have not been published publicly yet:
+[build images from your checkout](production-installation.md#build-and-publish-production-images)
+instead, or [start the local stack](../quickstart.md#start-the-local-stack)
+without image selections, which builds this checkout. The two aliases are not
+updated atomically; retry both pulls after publication completes if they refer
+to different source revisions.
 `latest` identifies the last publication to that alias, not necessarily the
 newest source commit: custom-tag publications leave it unchanged.
 
@@ -87,11 +84,10 @@ checkout. If you need a feature introduced after the published revision,
 [build images from that newer checkout](production-installation.md#build-and-publish-production-images)
 instead of combining its configuration with older `latest` images.
 
-For production, configure pull credentials for control-plane and tenant Pods;
-workstation `docker login` does not authenticate cluster nodes. See
-[private-registry delivery](private-registry-images.md) when copying images or
-installing the published OCI chart. For local setup, export the resolved pair
-as [development image selections](../quickstart.md#optional-use-matching-published-images).
+For production, public GHCR pulls need no pull Secret. See
+[private-registry delivery](private-registry-images.md) only when copying images
+to a private mirror. For local setup, export the resolved pair as
+[development image selections](../quickstart.md#optional-use-matching-published-images).
 
 ## Verify after installation
 

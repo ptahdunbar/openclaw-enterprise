@@ -4,7 +4,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $.Release.Name }}-{{ $component }}
+  name: {{ include "demo.serviceName" (dict "root" $ "component" $component) | quote }}
 spec:
   type: ClusterIP
   selector:
@@ -72,8 +72,8 @@ spec:
             - name: GF_SECURITY_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ $.Values.grafana.adminSecretName }}
-                  key: {{ $.Values.grafana.adminSecretKey }}
+                  name: {{ $.Values.grafana.adminSecretName | quote }}
+                  key: {{ $.Values.grafana.adminSecretKey | quote }}
             - { name: GF_PATHS_DATA, value: /data }
             - { name: GF_USERS_ALLOW_SIGN_UP, value: "false" }
             - { name: GF_ANALYTICS_REPORTING_ENABLED, value: "false" }
@@ -93,7 +93,14 @@ spec:
       volumes:
         - name: data
           emptyDir:
+            {{- if eq $component "grafana" }}
+            # First start runs ~700 SQLite migrations that each wait on fsync on
+            # node disk, which can take minutes. The database is small and disposable.
+            medium: Memory
+            sizeLimit: {{ $.Values.grafana.dataSizeLimit }}
+            {{- else }}
             sizeLimit: {{ $.Values.storage.sizeLimit }}
+            {{- end }}
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi

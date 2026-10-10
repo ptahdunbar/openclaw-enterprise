@@ -229,8 +229,7 @@ export class AuditEventFactory {
   create(input: AuditEventCreationInput): AuditEvent {
     const actorId = input.actorId ?? input.actor?.principalId ?? input.actor?.id ?? "unresolved";
     const kind = input.kind ?? "mutation";
-    const outcome =
-      input.outcome ?? (kind === "bootstrap" || kind === "mutation" ? "success" : "denied");
+    const outcome = input.outcome ?? (kind === "authorization_denial" ? "denied" : "success");
     const actor = input.actor ?? { principalId: actorId };
     const occurredAt = this.clock();
     const timestamp =

@@ -20,12 +20,13 @@ interface CredentialStorage {
     readonly namespaceId: string;
     readonly serviceAccountId: string;
     readonly accessToken: string;
-    readonly workspaceId: string;
   }): Promise<SecretReference>;
   deleteServiceAccountCredential(input: {
     readonly namespaceId: string;
     readonly serviceAccountId: string;
     readonly secretRef: SecretReference;
+    /** Set by a failed issuance's compensation: delete only a Secret holding this token. */
+    readonly accessToken?: string;
   }): Promise<void>;
 }
 
@@ -67,9 +68,16 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
 
   async create(account: ServiceAccount): Promise<void> {
     const suffix = `-${account.id}`;
-    const external = await this.client.createServiceAccount({
-      name: `${account.name.slice(0, 200 - suffix.length)}${suffix}`,
-    });
+    // Cut by whole characters within the 200 UTF-16 code unit budget, so the cut never
+    // leaves half of a surrogate pair.
+    let prefix = "";
+    for (const character of account.name) {
+      if (prefix.length + character.length > 200 - suffix.length) {
+        break;
+      }
+      prefix += character;
+    }
+    const external = await this.client.createServiceAccount({ name: `${prefix}${suffix}` });
     this.controller.registerRollback(() => this.client.deleteServiceAccount(external.id));
     await this.query(
       `INSERT INTO occ.service_account_driver_bindings
@@ -110,13 +118,15 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
       namespaceId: account.namespaceId,
       serviceAccountId: account.id,
       accessToken: credential.accessToken,
-      workspaceId: linked.workspaceId,
     });
+    // Compensations run after ROLLBACK released the account row lock, when another issuance
+    // may already have stored its Secret under the same name: delete only this token's.
     this.controller.registerRollback(() =>
       this.compute.deleteServiceAccountCredential({
         namespaceId: account.namespaceId,
         serviceAccountId: account.id,
         secretRef,
+        accessToken: credential.accessToken,
       }),
     );
 

@@ -18,6 +18,7 @@ not provide traces.
 | Signal              | Available path                                                                                                                                                           |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Operational logs    | Local container output; optional OpenTelemetry Collector export over OTLP/HTTP to your log backend.                                                                      |
+| One Agent's output  | The console **Logs** tab and `runtime/logs` API read a bounded, redacted page from Kubernetes on demand; nothing is exported. See [Agent logs](topics/agent-logs.md).    |
 | Collector metrics   | Prometheus endpoint on port `8888` for the collection pipeline itself.                                                                                                   |
 | Audit records       | Stored separately in PostgreSQL; the Collector does not export them. See [Audit Log](topics/audit-log.md).                                                               |
 | Application metrics | Private OCC Prometheus endpoints enabled by default in Helm; see [production scraping](observability/metrics.md) and the [development dashboard](../testing/metrics.md). |
@@ -151,10 +152,11 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
 Replace the endpoint. For authenticated export, select your protected
 `--from-file=exporter.yaml=...` and add referenced credentials from protected
 files to the exporter Secret. Update existing Secrets through your normal
-Secret-management workflow.
+Secret-management workflow, and [refresh them on upgrade](#refresh-the-collector-configuration-on-upgrade).
 
 Set the exact approved exporter or proxy IPv4 address and port in the protected
-values copy; `203.0.113.10/32` below is a placeholder:
+values copy. Use decimal ports from 1 to 65535 without leading zeros;
+`203.0.113.10/32` below is a placeholder:
 
 ```bash
 yq -i '.logging.collector.enabled = true |
@@ -182,6 +184,31 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
   rollout restart daemonset/openclaw-enterprise-collector
 ```
 
+##### Refresh the Collector configuration on upgrade
+
+Helm never updates these Secrets, so an upgrade keeps the previous release's
+filtering until you refresh them. Before each upgrade, including image-only
+releases, reapply `collector.yaml` and `kubernetes.yaml` from the target
+revision's checkout and merge any reviewed local changes. Substitute your
+protected exporter file if you use one. Then restart the Collector as shown above:
+
+```bash
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  create secret generic occ-otel-collector-config \
+  --from-file=collector.yaml=deploy/logging/collector.yaml \
+  --from-file=kubernetes.yaml=deploy/logging/kubernetes.yaml \
+  --from-file=exporter.yaml=deploy/logging/exporter.yaml \
+  --dry-run=client --output yaml |
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system apply -f -
+```
+
+Review the `deploy/logging/` diff between the two revisions first. The restart
+re-sends every collected Pod log still on each node, so expect duplicate or
+refused records in the backend (see [production readiness](#production-readiness)).
+`scripts/upgrade-production-images` compares both files with its checkout and
+stops before any change when they differ. Pass `--collector-config-reviewed`
+only to keep a reviewed custom configuration.
+
 ## Tests
 
 ### Check delivery to the backend
@@ -194,6 +221,12 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
 3. For runtime coverage, deploy an Agent and exercise its gateway or Codex
    app-server. Check the corresponding `openclaw-gateway` or `codex-app-server`
    records and `openclaw.agent.id` / `openclaw.revision.id` resource attributes.
+
+Retained record bodies hold the event name; `codex.turn` and `codex.tool_call`
+bodies are fixed text, and `codex.operational` keeps Codex's message when it is
+short plain text. Search for a request, Agent,
+or revision by its attribute, not by body text; in Loki these are structured
+metadata, for example `{service_name="occ-worker"} | occ_revision_id="<id>"`.
 
 A healthy Collector and local container output do not prove that the backend
 received the records. Only approved runtime events appear. Receiving API logs
@@ -241,21 +274,31 @@ to assign alert recipients and response procedures alongside these collection ch
 - Keep runtime native OTLP export disabled and preserve Collector filtering.
   Local container logs and remotely exported records have different privacy
   boundaries; restrict access to both.
-- Keep exporter traffic within the approved `/32` and port, with DNS and
-  Kubernetes API access configured by the chart. Use an approved fixed proxy
-  when your backend cannot be represented by that egress policy. NetworkPolicies
-  are additive: the current shared dependency policy also permits Collector
-  traffic to the configured database destination; the dedicated Collector
-  policy does not remove that access.
+- Keep exporter traffic within the approved `/32` or in-cluster selector and
+  port, with DNS and Kubernetes API access configured by the chart. Use an
+  approved fixed proxy when your backend cannot be represented by that egress
+  policy. NetworkPolicies are additive, but no chart policy grants the
+  Collector database access; the shared dependency policy selects only the
+  API, worker and initialization Pods.
 - Alert on failed exports, refused records, queue saturation, and Collector
   restarts. Verify retention and access controls in your selected backend.
 - Treat delivery as best-effort. Docker keeps exporter queues in the
   `occ_otelcol_data` volume and bounded runtime log caches; its push-based
   Fluent Forward receiver has no file offsets. Kubernetes keeps file offsets
   and exporter queues in `/var/lib/otelcol` on bounded `emptyDir` storage,
-  which survives container restart but is lost on Pod or node replacement. An
-  outage can lose operational logs without blocking OCC work. Audit records are
-  stored separately in PostgreSQL.
+  which survives container restart but is lost on Pod or node replacement. A
+  replaced Collector Pod, including after the `rollout restart` an upgrade
+  refresh needs, reads every collected Pod log still on its node from the
+  beginning, so the backend receives duplicates of records it already has, with
+  their original timestamps. A backend can refuse the oldest of them instead:
+  Loki answers `400` `entry too far behind` for records outside its out-of-order
+  window (by default, one hour behind the newest record in the stream). The
+  Collector does not retry them; it logs `Exporting failed. Dropping data.` and
+  `otelcol_exporter_send_failed_log_records` rises. Expect this, and any
+  failed-export alert, after each Collector Pod replacement. Investigate if
+  failures continue after the replay or new records stop reaching the backend.
+  An outage can lose operational logs without blocking OCC work. Audit records
+  are stored separately in PostgreSQL.
 
 ## Troubleshooting
 

@@ -1,65 +1,36 @@
-import { NativeIAMDriver } from "@openclaw-enterprise/iam";
-import { isNonEmptyString } from "@openclaw-enterprise/utils";
-import { randomUUID } from "node:crypto";
-import type { IncomingMessage } from "node:http";
-import type { Socket } from "node:net";
-import Fastify, {
-  LogController,
-  type FastifyInstance,
-  type FastifyBaseLogger,
-  type FastifyReply,
-  type FastifyRequest,
-  type FastifySchema,
-  type HTTPMethods,
-  type InjectOptions,
-} from "fastify";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
-import ajvFormats from "ajv-formats";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
 import {
-  AuthAccountRoleInvalidError,
-  AuthAccountRoleNotFoundError,
-  type AuthPrincipalSeed,
-} from "@openclaw-enterprise/iam";
-import {
-  harnessAuthBindingFromSnapshot,
-  WORKSPACE_DEFAULTS_ID,
-  normalizeInitialWorkspaceFiles,
-  type InitialWorkspaceFiles,
-  ErrorResponse,
   AgentDeploymentDiagnosticsResponse,
   AgentRuntimeCredentialResponse,
+  AgentRuntimeLogsResponse,
+  AgentRuntimeResponse,
+  CredentialSourceResponse,
+  ErrorDetail as ErrorDetailSchema,
+  ErrorResponse,
   JsonValue,
+  occApiRoutes,
+  PluginApproversSchema,
   PluginDesiredSelectionSchema,
   PluginDesiredStateSchema,
   PluginDriverIdentitySchema,
-  PluginToolPolicySchema,
   PluginToolDefaultsSchema,
-  PluginApproversSchema,
+  PluginToolPolicySchema,
+  PRESET_JSON_MAX_BYTES,
   SecretResponse,
-  CredentialSourceResponse,
-  occApiRoutes,
-  type Agent,
-  type AgentRead,
-  type AgentRevisionRead,
-  type ProvisionAgentBody,
-  type AgentRevision,
-  type AgentRuntimeCredentialsBody,
+  type AgentRuntimeLogsQuery,
   type AuditEvent,
+  type AuditEventKind,
   type AuthorizationEvidence,
-  type ConfigurationDriver,
+  type BackendSummary,
   type ChannelDriver,
   type ComputeDriver,
-  type HarnessExecutionMode,
-  type HarnessAuthBinding,
+  type ConfigurationDriver,
   type IAMDriver,
   type Installation,
   type OccApiRoute,
   type PermissionAction,
-  type BackendSummary,
-  type RepositoryAccess,
-  type RepositoryBindingRequest,
   type ResourceKind,
   type ResourceRef,
   type SandboxDriver,
@@ -69,25 +40,48 @@ import {
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
 import {
+  AuthAccountRoleInvalidError,
+  AuthAccountRoleNotFoundError,
+  NativeIAMDriver,
+  type AuthPrincipalSeed,
+} from "@openclaw-enterprise/iam";
+import {
+  AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  DeletionRetryOwnedError,
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
+  ComputeProvisioningRefusedError,
+  createRuntimeLogCursorCodec,
   DependencyUnavailableError,
-  NamespaceNotReadyError,
-  RepositoryOptionsUnavailableError,
+  DeviceAuthorizationStartError,
   ResourceConflictError,
+  RuntimeCredentialsForbiddenByClusterError,
+  RuntimeLogsError,
   UserAlreadyExistsError,
-  type DeploymentStatusResult,
-  type AgentProvisioningProgress,
   type DeployAgentAuthorization,
-  type ProvisionAgentInput,
   type HarnessResolver,
   type OpenClawController,
 } from "@openclaw-enterprise/occ";
+import { isNonEmptyString } from "@openclaw-enterprise/utils";
+import SerializerSelector from "@fastify/fast-json-stringify-compiler";
+import ajvFormats from "ajv-formats";
+import Fastify, {
+  LogController,
+  type FastifyBaseLogger,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+  type FastifySchema,
+  type HTTPMethods,
+  type InjectOptions,
+} from "fastify";
+import { randomUUID } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdmittedCaller } from "./admission/admission-verifier.ts";
 import {
-  hostnameMatchesSharedCookieDomain,
-  normalizeSharedCookieDomain,
   OCC_SERVICE_KEY_HEADER,
+  SERVICE_KEY_NAME_MAX_LENGTH,
+  ServiceKeyNameRefused,
   type ClientAddressConfiguration,
   type ControllerAuth,
   type PreparedAuthAccount,
@@ -96,42 +90,46 @@ import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-ass
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
   isAllowedWorkspaceFileName,
-  type ControllerWorkspaceFilesAccess,
   type ControllerWorkspaceFileReadResult,
+  type ControllerWorkspaceFilesAccess,
   type ControllerWorkspaceFileWriteResult,
 } from "./gateway/contracts.ts";
-import {
-  deriveNativeAdminHost,
-  nativeAdminConfigurationSupported,
-  nativeAdminGatewayHttpBase,
-  nativeAdminTarget,
-  normalizeNativeAdminDomain,
-  type NativeAdminAccessConfig,
-  type NativeAdminTarget,
-} from "./gateway/native-admin.ts";
-import {
-  proxyNativeAdminHttp as streamNativeAdminHttp,
-  proxyNativeAdminWebSocket,
-  type NativeAdminProxyContext,
-  type NativeAdminWebSocketCloseCause,
-  type NativeAdminWebSocketCloseReason,
-} from "./gateway/native-admin-proxy.ts";
+import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
+import { createAgentHandlers } from "./http/agents.ts";
+import { configurationHandlers } from "./http/configurations.ts";
+import { credentialSourceHandlers } from "./http/credential-sources.ts";
+import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
 import {
   canonicalFailure,
+  cappedPath,
+  dependencyUnavailable,
+  dependencyUnavailableLogFields,
   failure,
   isAuthorizationDenied,
   isDependencyUnavailable,
-  jsonPointer,
   RequestFailure,
   requestFailure,
   responseHeaders,
-  type ErrorDetail,
+  unstorableTextFailure,
 } from "./http/errors.ts";
-import { configurationHandlers } from "./http/configurations.ts";
-import { presetHandlers } from "./http/presets.ts";
-import { secretHandlers } from "./http/secrets.ts";
-import { credentialSourceHandlers } from "./http/credential-sources.ts";
 import { iamHandlers } from "./http/iam.ts";
+import {
+  createNativeAdminAccess,
+  nativeAdminStatusOperation,
+  nativeAdminStatusSchema,
+} from "./http/native-admin.ts";
+import { presetHandlers } from "./http/presets.ts";
+import {
+  isRuntimeLogDownload,
+  RUNTIME_LOG_DOWNLOAD_ACTION,
+  runtimeLogDownloadBody,
+  runtimeLogDownloadFileName,
+  RuntimeLogLimiter,
+  runtimeLogPageBody,
+  runtimeLogQuery,
+  type AgentRuntimeLogsConfig,
+} from "./http/runtime-logs.ts";
+import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
 
@@ -162,6 +160,13 @@ export interface ControllerAppOptions {
   readonly workspaceFileRequestTimeoutMs?: number;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
+  /**
+   * How often a native admin WebSocket rechecks its admission (default 25 s). The server
+   * leaves it unset; tests shorten it so revocation closes do not wait the full interval.
+   */
+  readonly nativeAdminWebSocketLeaseIntervalMs?: number;
+  /** Absent or disabled: both runtime routes answer 501. */
+  readonly agentRuntimeLogs?: AgentRuntimeLogsConfig;
   readonly publicOrigin?: string;
   /** Writes the prepared account with its Principal, bindings and enrolment atomically. */
   readonly provisionAuthAccount?: (
@@ -180,35 +185,6 @@ export interface ControllerApp {
   fetch(request: Request): Promise<Response>;
 }
 
-interface NativeAdminProxyResolution {
-  readonly parentSessionId: string;
-  readonly actorId: string;
-  readonly actorIssuer: string;
-  readonly actorSubject: string;
-  readonly namespaceId: string;
-  readonly agentId: string;
-  readonly revisionId: string;
-  readonly target: NativeAdminTarget;
-  readonly gatewayBase: string;
-}
-
-interface NativeAdminProxyDenial {
-  readonly denied: true;
-  readonly reason: NativeAdminWebSocketCloseReason;
-  readonly actorId?: string;
-  readonly actorIssuer?: string;
-  readonly actorSubject?: string;
-  readonly namespaceId?: string;
-  readonly agentId?: string;
-  readonly revisionId?: string;
-  readonly host?: string;
-  readonly actualAuthorizationDenied?: true;
-  readonly evidence?: AuthorizationEvidence;
-  readonly authorization?: NonNullable<AuthorizationDeniedError["authorization"]>;
-}
-
-type NativeAdminProxyAdmission = NativeAdminProxyResolution | NativeAdminProxyDenial;
-
 interface RequiredPermission {
   readonly action: PermissionAction;
   readonly resourceKind: ResourceKind;
@@ -222,7 +198,9 @@ interface RequiredPermission {
     | "iam_binding_target"
     | "provisioning_work"
     | "missing_runtime_credentials"
-    | "authenticated_plugin_discovery";
+    | "authenticated_plugin_discovery"
+    | "read_logs_alternative"
+    | "bound_credential_source";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -241,25 +219,91 @@ const resourceHandlers: ResourceHandlers = {
 const DEFAULT_BODY_LIMIT = 64 * 1024;
 // Four 16 KiB documents can expand sixfold in JSON, plus the ordinary create fields.
 const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
+// A bounded template may use six-byte JSON escapes; reserve space for its name and envelope.
+const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
 const WORKSPACE_FILE_BODY_LIMIT = 48 * 1024;
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
-const NATIVE_ADMIN_PROXY_ADMISSION_TIMEOUT_MS = 5_000;
-const NATIVE_ADMIN_CLOSE_AUDIT_DRAIN_MS = 5_000;
+// Path parameters such as IAM Role and AccessBinding IDs hold up to 200 characters (code
+// points). The router compares a parameter's decoded UTF-16 length, so 200 characters need
+// at most 400 units; its default of 100 refused contract-valid IDs before any handler ran.
+const MAX_PATH_PARAMETER_LENGTH = 400;
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-const RESOURCE_ID = {
-  namespaceId: /^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  presetId: /^pre_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  configurationId: /^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  serviceAccountId: /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  secretId: /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  credentialSourceId: /^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  agentId: /^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  revisionId: /^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+const RESOURCE_ID_PREFIX = {
+  namespaceId: "ns_",
+  presetId: "pre_",
+  configurationId: "cfg_",
+  serviceAccountId: "sa_",
+  secretId: "sec_",
+  credentialSourceId: "cs_",
+  agentId: "agt_",
+  revisionId: "rev_",
+  deploymentId: "rev_",
 } as const;
+const RESOURCE_ID = Object.fromEntries(
+  Object.entries(RESOURCE_ID_PREFIX).map(([parameter, prefix]) => [
+    parameter,
+    new RegExp(`^${prefix}[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`),
+  ]),
+) as Readonly<Record<keyof typeof RESOURCE_ID_PREFIX, RegExp>>;
 
 function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
   return ajvFormats.default(ajv);
+}
+
+// Fastify compiles one response serializer per route and status code, and rebuilds its
+// serializer factory for every route in a plugin that added shared schemas; each
+// fast-json-stringify build then re-validates every shared schema. That was about 1,100
+// builds (830 of them the same ErrorResponse reference) and most of the API's boot at the
+// chart's 500m CPU limit. A serializer depends only on its schema, the shared schemas and
+// the serializer options, so build each distinct combination once.
+function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
+  const buildSerializerCompiler = SerializerSelector();
+  const sharedSchemaIds = new WeakMap<object, number>();
+  // Never pruned. That is safe only while every serializer is built at route registration,
+  // a fixed set. Compiling per request (reply.compileSerializationSchema or serializeInput
+  // with a schema assembled at request time) would grow this Map without bound; such a
+  // route must set its own serializerCompiler.
+  const serializers = new Map<string, SerializerSelector.Serializer>();
+  let nextSharedSchemaId = 0;
+  const sharedSchemaId = (schema: object) => {
+    let id = sharedSchemaIds.get(schema);
+    if (id === undefined) {
+      id = nextSharedSchemaId++;
+      sharedSchemaIds.set(schema, id);
+    }
+    return id;
+  };
+  return (externalSchemas, options) => {
+    const compile = buildSerializerCompiler(externalSchemas, options);
+    const sharedSchemas = Object.entries((externalSchemas ?? {}) as Record<string, unknown>);
+    // Shared schemas are keyed by object identity in a WeakMap; a context with any shared
+    // schema that is not a plain object compiles uncached instead.
+    if (sharedSchemas.some(([, schema]) => typeof schema !== "object" || schema === null)) {
+      return compile;
+    }
+    // Fastify passes the same stored schema objects each time; identity names the set.
+    const shared = sharedSchemas
+      .map(([id, schema]) => `${id}=${sharedSchemaId(schema as object)}`)
+      .join(",");
+    const prefix = `${JSON.stringify(options ?? {})}|${shared}|`;
+    // Route schemas are fixed at registration. A schema JSON cannot express (a cycle or a
+    // BigInt keyword) compiles uncached rather than failing registration here.
+    return (route) => {
+      let key: string;
+      try {
+        key = prefix + JSON.stringify(route.schema);
+      } catch {
+        return compile(route);
+      }
+      let serializer = serializers.get(key);
+      if (serializer === undefined) {
+        serializer = compile(route);
+        serializers.set(key, serializer);
+      }
+      return serializer;
+    };
+  };
 }
 
 function ipv4(value: string): number | undefined {
@@ -269,7 +313,8 @@ function ipv4(value: string): number | undefined {
   }
   let result = 0;
   for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) {
+    // Same no-leading-zero rule as production trusted proxies and Compute: "010" is not 10.
+    if (!/^(?:0|[1-9][0-9]{0,2})$/.test(part)) {
       return undefined;
     }
     const octet = Number(part);
@@ -287,7 +332,13 @@ function cidrContains(cidr: string, address: string): boolean {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
   }
   const prefix = Number(prefixText);
-  if (!/^\d+$/.test(prefixText) || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) {
+  // "08" is not prefix 8. Production parseCidr refuses that spelling, and so does Compute.
+  if (
+    !/^(?:0|[1-9][0-9]{0,2})$/.test(prefixText) ||
+    !Number.isInteger(prefix) ||
+    prefix < 0 ||
+    prefix > 32
+  ) {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
   }
   const networkValue = ipv4(network);
@@ -344,7 +395,7 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   if (depth > 24) {
     throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-      { path, code: "TOO_DEEP" },
+      { path: cappedPath(path), code: "TOO_DEEP" },
     ]);
   }
   if (value === null || typeof value !== "object") {
@@ -359,11 +410,16 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   for (const [key, entry] of Object.entries(value)) {
     if (key === "__proto__" || key === "constructor" || key === "prototype") {
       throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-        { path: `${path}/${jsonPointer(key)}`, code: "INVALID_VALUE" },
+        { path: cappedPath(`${path}/${jsonPointer(key)}`), code: "INVALID_VALUE" },
       ]);
     }
     validateConfiguration(entry, depth + 1, `${path}/${jsonPointer(key)}`);
   }
+}
+
+/** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
+function authorizesBeforeBody(operation: OccApiRoute): boolean {
+  return operation.operationId === "createPreset" || operation.operationId === "updatePreset";
 }
 
 function operationTarget(
@@ -406,6 +462,9 @@ function operationTarget(
   ) {
     return { kind: "secret", id: namespaceId, namespaceId };
   }
+  if (operation.operationId.endsWith("DeviceAuthorization") && namespaceId) {
+    return { kind: "agent", id: agentId ?? namespaceId, namespaceId };
+  }
   if (secretId && namespaceId) {
     return { kind: "secret", id: secretId, namespaceId };
   }
@@ -416,8 +475,12 @@ function operationTarget(
   ) {
     return { kind: "credential_source", id: namespaceId, namespaceId };
   }
+  // A route naming a credential source authorizes the resource kind it declares: withdrawal
+  // routes declare the Agent.
   if (credentialSourceId && namespaceId) {
-    return { kind: "credential_source", id: credentialSourceId, namespaceId };
+    return operation.resourceKind === "agent" && agentId
+      ? { kind: "agent", id: agentId, namespaceId }
+      : { kind: "credential_source", id: credentialSourceId, namespaceId };
   }
   if (
     (operation.operationId === "createAgent" ||
@@ -452,6 +515,25 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     action: operation.iamAction,
     resourceKind: operation.resourceKind,
   };
+
+  if (operation.operationId.endsWith("DeviceAuthorization")) {
+    const saved = operation.operationId.includes("SavedAgent");
+    return [
+      {
+        action: saved ? "update" : "create",
+        resourceKind: "agent",
+        scope: saved ? "requested" : "namespace",
+      },
+      ...(saved
+        ? [{ action: "read" as const, resourceKind: "agent" as const, scope: "requested" as const }]
+        : []),
+      {
+        action: operation.operationId.startsWith("start") ? "create" : "operate",
+        resourceKind: "secret",
+        scope: operation.operationId.startsWith("start") ? "namespace" : "requested",
+      },
+    ];
+  }
 
   if (operation.operationId === "createNamespace") {
     return [
@@ -500,6 +582,24 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
 
   if (operation.operationId === "createSecret") {
     return [{ ...permission, scope: "namespace" }];
+  }
+
+  if (
+    operation.operationId === "createCredentialSource" ||
+    operation.operationId === "updateCredentialSource"
+  ) {
+    // Mirrors OCC readCredentialSourceSecrets: operate on each Secret whose value the
+    // gateway receives (an update re-sends the current references when it names none).
+    const create = operation.operationId === "createCredentialSource";
+    return [
+      { ...permission, scope: create ? "namespace" : "requested" },
+      {
+        action: "operate",
+        resourceKind: "secret",
+        scope: create ? "request_body" : "requested",
+        condition: "bound_secret",
+      },
+    ];
   }
 
   if (operation.operationId === "lookupChannelDirectory") {
@@ -555,7 +655,19 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       },
       {
         action: "read",
+        resourceKind: "credential_source",
+        scope: "request_body",
+        condition: "iam_binding_target",
+      },
+      {
+        action: "read",
         resourceKind: "namespace",
+        scope: "request_body",
+        condition: "iam_binding_target",
+      },
+      {
+        action: "read",
+        resourceKind: "preset",
         scope: "request_body",
         condition: "iam_binding_target",
       },
@@ -581,7 +693,10 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     operation.operationId === "deleteIAMRole" ||
     operation.operationId === "listIAMAccessBindings" ||
     operation.operationId === "getIAMAccessBinding" ||
-    operation.operationId === "deleteIAMAccessBinding"
+    operation.operationId === "deleteIAMAccessBinding" ||
+    operation.operationId === "listIAMServicePrincipals" ||
+    operation.operationId === "createIAMServicePrincipal" ||
+    operation.operationId === "getIAMServicePrincipal"
   ) {
     return [
       { action: "administer", resourceKind: "installation", scope: "requested" },
@@ -609,6 +724,11 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               action: "create" as const,
               resourceKind: "configuration" as const,
               scope: "namespace" as const,
+            },
+            {
+              action: "administer" as const,
+              resourceKind: "installation" as const,
+              scope: "requested" as const,
             },
           ]
         : [
@@ -646,6 +766,21 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         scope: "requested",
         condition: "bound_secret",
       },
+      // Mirrors OCC authorizeHarnessAuthSource and authorizeAgentCredentialSources. Agent
+      // provisioning refuses credential sources, so it needs no such grant.
+      ...(operation.operationId === "provisionAgent"
+        ? []
+        : [
+            {
+              action: "operate" as const,
+              resourceKind: "credential_source" as const,
+              scope:
+                operation.operationId === "createAgent"
+                  ? ("request_body" as const)
+                  : ("requested" as const),
+              condition: "bound_credential_source" as const,
+            },
+          ]),
     ];
   }
 
@@ -653,12 +788,34 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     operation.operationId === "getAgentProvisioning" ||
     operation.operationId === "retryAgentProvisioning"
   ) {
+    // Mirrors OCC authorizeProvisioningRequest, then authorizeProvisioningRecord.
     return [
+      { action: "create", resourceKind: "agent", scope: "namespace" },
+      { action: "create", resourceKind: "configuration", scope: "namespace" },
+      { action: "administer", resourceKind: "installation", scope: "requested" },
+      ...(["read", "operate", "deploy"] as const).map((action) => ({
+        action,
+        resourceKind: "agent" as const,
+        scope: "requested" as const,
+        condition: "provisioning_work" as const,
+      })),
+      ...(["read", "update"] as const).map((action) => ({
+        action,
+        resourceKind: "configuration" as const,
+        scope: "requested" as const,
+        condition: "provisioning_work" as const,
+      })),
       {
-        action: permission.action,
-        resourceKind: "agent",
+        action: "read",
+        resourceKind: "service_account",
         scope: "requested",
-        condition: "provisioning_work",
+        condition: "associated_service_account",
+      },
+      {
+        action: "operate",
+        resourceKind: "secret",
+        scope: "requested",
+        condition: "bound_secret",
       },
     ];
   }
@@ -699,10 +856,30 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     ];
   }
 
+  if (operation.operationId === "getAgentDeploymentRuntime") {
+    return [
+      { action: "operate", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "agent_revision", scope: "requested" },
+    ];
+  }
+
+  if (operation.operationId === "getAgentDeploymentRuntimeLogs") {
+    return [
+      { action: "read_logs", resourceKind: "agent", scope: "requested" },
+      {
+        action: "administer",
+        resourceKind: "agent",
+        scope: "requested",
+        condition: "read_logs_alternative",
+      },
+      { action: "read", resourceKind: "agent", scope: "requested" },
+    ];
+  }
+
   switch (operation.authorizationTarget) {
     case "namespace_collection":
       return [{ ...permission, scope: "namespace" }];
-    case "preset_candidates":
     case "namespace_candidates":
       return [{ ...permission, scope: "each_returned" }];
     case "namespace_and_agent_candidates":
@@ -712,6 +889,7 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
       ];
     case "namespace_and_service_account_candidates":
     case "namespace_and_secret_candidates":
+    case "namespace_and_preset_candidates":
     case "namespace_and_credential_source_candidates":
       return [
         { action: "read", resourceKind: "namespace", scope: "requested" },
@@ -731,6 +909,14 @@ function permissionDescription(
   permissions: readonly RequiredPermission[],
   operation?: OccApiRoute,
 ): string {
+  if (
+    operation?.operationId === "getAgentProvisioning" ||
+    operation?.operationId === "retryAgentProvisioning"
+  ) {
+    const verb = operation.operationId === "getAgentProvisioning" ? "read" : "retry";
+    // The provisioning_work rows are described here, not per row.
+    return `Requires create permission for Agent and Configuration resources in the requested Namespace and administer permission on the Installation. These are checked from the request path before any lookup, so a caller without them gets 403 whether or not the Namespace or work item exists. Only the principal that started the work can ${verb} it. The caller also needs read, operate and deploy permission on the work's Agent and read and update permission on its Configuration once the work has created them, operate permission on each Secret the work binds or uses for Harness authentication, and read permission on its Harness ServiceAccount when present. OCC re-checks these grants against the initiator while the work runs.`;
+  }
   const names: Record<ResourceKind, string> = {
     installation: "Installation",
     namespace: "Namespace",
@@ -774,16 +960,31 @@ function permissionDescription(
         if (operation?.operationId === "updateConfiguration") {
           return `Requires ${action} permission on each ${name} bound by the resulting Configuration.`;
         }
+        if (operation?.operationId === "createCredentialSource") {
+          return `Requires ${action} permission on each ${name} named in the request body secrets.`;
+        }
+        if (operation?.operationId === "updateCredentialSource") {
+          return `Requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
+        }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
       }
-      if (condition === "provisioning_work") {
-        return `Requires current ${action} authorization for the accepted Agent provisioning record. Before Agent creation, only the initiating actor in the exact Namespace can use the work item.`;
+      if (condition === "bound_credential_source") {
+        if (operation?.operationId === "createAgent") {
+          return `Requires ${action} permission on each ${name} listed in credentialSources or named by a credential-source harnessAuth.`;
+        }
+        if (operation?.operationId === "updateAgent") {
+          return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update.`;
+        }
+        return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
       }
       if (condition === "missing_runtime_credentials") {
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
       }
       if (condition === "authenticated_plugin_discovery") {
         return `Requires ${action} permission on the Agent's bound ${name} when the selected Plugin Driver requires a discovery credential.`;
+      }
+      if (condition === "read_logs_alternative") {
+        return `Without read_logs, ${action} permission on the requested ${name} also admits the read.`;
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
@@ -802,7 +1003,7 @@ function permissionDescription(
     .join(" ");
 
   if (operation?.operationId === "deployAgent") {
-    return `${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret.`;
+    return `${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists.`;
   }
   return description;
 }
@@ -828,107 +1029,6 @@ function clientInstallation(
   };
 }
 
-function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
-  if ("configurationReadError" in agent) {
-    return { ...agent };
-  }
-  return {
-    id: agent.id,
-    namespaceId: agent.namespaceId,
-    name: agent.name,
-    servicePrincipalId: agent.servicePrincipalId,
-    configurationId: agent.configurationId,
-    backendId: agent.backendId,
-    executionMode: agent.executionMode,
-    ...(agent.plugins === undefined ? {} : { plugins: agent.plugins }),
-    ...(agent.pluginApprovers === undefined ? {} : { pluginApprovers: agent.pluginApprovers }),
-    ...(agent.repositoryBindings === undefined
-      ? {}
-      : { repositoryBindings: agent.repositoryBindings }),
-    ...(agent.repositoryAccess === undefined ? {} : { repositoryAccess: agent.repositoryAccess }),
-    harnessAuth: agent.harnessAuth,
-    ...(agent.activeRevisionId === undefined ? {} : { activeRevisionId: agent.activeRevisionId }),
-    desiredRuntimeState: agent.desiredRuntimeState,
-    status: agent.status,
-    createdAt: agent.createdAt,
-  };
-}
-
-function agentProvisioningUrl(namespaceId: string, workId: string): string {
-  return `/namespaces/${encodeURIComponent(namespaceId)}/agents/provision/${encodeURIComponent(workId)}`;
-}
-
-function clientAgentProvisioning(
-  provisioning: Readonly<AgentProvisioningProgress>,
-  namespaceId: string,
-): Record<string, unknown> {
-  return {
-    workId: provisioning.workId,
-    status: provisioning.status,
-    phase: provisioning.phase,
-    attemptCount: provisioning.attemptCount,
-    updatedAt: provisioning.updatedAt,
-    ...(provisioning.agentId === undefined ? {} : { agentId: provisioning.agentId }),
-    ...(provisioning.configurationId === undefined
-      ? {}
-      : { configurationId: provisioning.configurationId }),
-    ...(provisioning.revisionId === undefined ? {} : { revisionId: provisioning.revisionId }),
-    url: provisioning.url ?? agentProvisioningUrl(namespaceId, provisioning.workId),
-    ...(provisioning.error === undefined ? {} : { error: provisioning.error }),
-  };
-}
-
-function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, unknown> {
-  if ("configurationReadError" in revision) {
-    return { ...revision };
-  }
-  return {
-    id: revision.id,
-    namespaceId: revision.namespaceId,
-    agentId: revision.agentId,
-    revision: revision.revision,
-    configurationId: revision.configurationId,
-    configurationKind: revision.configurationKind,
-    configurationGeneration: revision.configurationGeneration,
-    backendId: revision.backendId,
-    configuration: revision.configuration,
-    harness: revision.harness,
-    compute: revision.compute,
-    ...(revision.secretDriverId === undefined ? {} : { secretDriverId: revision.secretDriverId }),
-    ...(revision.secretBindings === undefined ? {} : { secretBindings: revision.secretBindings }),
-    ...(revision.plugins === undefined ? {} : { plugins: revision.plugins }),
-    ...(revision.pluginApprovers === undefined
-      ? {}
-      : { pluginApprovers: revision.pluginApprovers }),
-    ...(revision.repositoryCredentials === undefined
-      ? {}
-      : {
-          repositoryCredentials: {
-            driver: revision.repositoryCredentials.driver,
-            deadlineWallMs: revision.repositoryCredentials.deadlineWallMs,
-            bindings: revision.repositoryCredentials.bindings.map(({ repositoryRef, profile }) => ({
-              repositoryRef,
-              profile,
-            })),
-          },
-        }),
-    harnessAuth: harnessAuthBindingFromSnapshot(revision.harnessAuth),
-    createdAt: revision.createdAt,
-  };
-}
-
-function clientDeploymentStatus(status: Readonly<DeploymentStatusResult>): Record<string, unknown> {
-  return {
-    deploymentId: status.deploymentId,
-    namespaceId: status.namespaceId,
-    agentId: status.agentId,
-    status: status.status,
-    error: status.error,
-    warnings: status.warnings,
-    progress: status.progress,
-  };
-}
-
 export function createFastifyApp(options: ControllerAppOptions): FastifyInstance {
   const development = Object.freeze({ ...options.development });
   if (
@@ -948,6 +1048,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   if (!Number.isSafeInteger(workspaceFileRequestTimeoutMs) || workspaceFileRequestTimeoutMs < 1) {
     throw new Error("The workspace file request timeout must be a positive integer.");
   }
+  const nativeAdminWebSocketLeaseIntervalMs = options.nativeAdminWebSocketLeaseIntervalMs;
+  if (
+    nativeAdminWebSocketLeaseIntervalMs !== undefined &&
+    (!Number.isSafeInteger(nativeAdminWebSocketLeaseIntervalMs) ||
+      nativeAdminWebSocketLeaseIntervalMs < 1)
+  ) {
+    throw new Error("The native admin WebSocket lease interval must be a positive integer.");
+  }
   let publicOrigin: string | undefined;
   if (options.publicOrigin !== undefined) {
     try {
@@ -966,34 +1074,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw new Error("The controller public origin must be an absolute origin URL.");
     }
   }
-  const nativeAdminDomain = normalizeNativeAdminDomain(options.nativeAdmin?.domain);
-  if (options.nativeAdmin?.enabled === true) {
-    if (publicOrigin === undefined) {
-      throw new Error("Native admin UI access requires OCC public origin configuration.");
-    }
-    if (new URL(publicOrigin).protocol !== "https:") {
-      throw new Error("Native admin UI access requires an HTTPS public origin.");
-    }
-    if (nativeAdminDomain === undefined) {
-      throw new Error("Native admin UI access requires an Agent domain.");
-    }
-    const sharedCookieDomain = options.auth.sharedCookieDomain;
-    if (
-      sharedCookieDomain === undefined ||
-      normalizeSharedCookieDomain(options.nativeAdmin.sharedCookieDomain) !== sharedCookieDomain ||
-      !hostnameMatchesSharedCookieDomain(new URL(publicOrigin).hostname, sharedCookieDomain)
-    ) {
-      throw new Error("Native admin UI access requires a shared cookie domain containing OCC.");
-    }
-    if (!hostnameMatchesSharedCookieDomain(nativeAdminDomain, sharedCookieDomain)) {
-      throw new Error(
-        "Native admin UI access requires an Agent domain inside the shared cookie domain.",
-      );
-    }
-    if (options.nativeAdminGatewayApiKey === undefined) {
-      throw new Error("Native admin UI access requires a private gateway API key.");
-    }
-  }
   validateTrustedDevelopmentCidrs(development);
   if (development.enabled && options.trustedProxies !== undefined) {
     throw new Error("Trusted proxies are a production setting.");
@@ -1010,11 +1090,70 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     trustProxy: false,
     requestIdHeader: false,
     genReqId: () => `req_${randomUUID()}`,
+    routerOptions: { maxParamLength: MAX_PATH_PARAMETER_LENGTH },
+    // Router failures happen before routing, so no hook or error handler runs; without this
+    // Fastify answers its own body (echoing the path) with no request ID or security headers.
+    frameworkErrors: (error, request, reply) => {
+      const mapped =
+        error.code === "FST_ERR_BAD_URL"
+          ? failure(400, "INVALID_REQUEST", "The request path has a malformed percent-encoding.")
+          : error.code === "FST_ERR_MAX_PARAM_LENGTH"
+            ? failure(
+                400,
+                "INVALID_REQUEST",
+                "The request does not match the operation contract: a path parameter is too long.",
+              )
+            : // FST_ERR_ASYNC_CONSTRAINT; this app registers no async route constraints.
+              failure(500, "INTERNAL_ERROR", "The platform request could not be completed.");
+      // No hook runs for these, so record them as the onResponse hook records other requests,
+      // with no measured duration.
+      options.metrics?.observeHttp("unmatched", request.method, mapped.status, 0);
+      options.logger?.info({
+        event: "http.completed",
+        requestId: request.id,
+        method: request.method,
+        route: "unmatched",
+        status: mapped.status,
+      });
+      canonicalFailure(reply, mapped);
+    },
     ajv: {
-      customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false },
+      // `verbose` attaches each failure's schema and value, so contract errors can tell which
+      // shape of a discriminated union a request chose (http/error-details.ts). Neither is logged or
+      // returned: problems name only paths and the schema's accepted values, and http/errors.ts
+      // drops both from the error once its problems are built. An onError hook runs before
+      // that, so none may log `error.validation`.
+      customOptions: {
+        removeAdditional: false,
+        coerceTypes: false,
+        useDefaults: false,
+        verbose: true,
+      },
       plugins: [formatsPlugin],
     },
+    schemaController: { compilersFactory: { buildSerializer: cachedResponseSerializers() } },
   }).withTypeProvider<TypeBoxTypeProvider>();
+
+  // Shutdown (app.close) drains admitted requests, but Node and Fastify close only the
+  // keep-alive sockets that are idle when it starts. A socket whose response finishes during
+  // the drain would stay open until the server's 72 s keep-alive timeout, past the API Pod's
+  // 30 s termination grace. Mark those responses `Connection: close`, or close the socket
+  // after a response whose headers were already sent, as Node does for `Connection: close`.
+  const openResponses = new Set<ServerResponse>();
+  app.server.on("request", (_request: IncomingMessage, response: ServerResponse) => {
+    openResponses.add(response);
+    response.once("close", () => openResponses.delete(response));
+  });
+  app.addHook("preClose", async () => {
+    for (const response of openResponses) {
+      if (!response.headersSent) {
+        response.setHeader("connection", "close");
+      } else if (!response.writableFinished) {
+        const { socket } = response;
+        response.once("finish", () => socket?.destroySoon());
+      }
+    }
+  });
 
   app.removeContentTypeParser("text/plain");
   app.addSchema(JsonValue);
@@ -1054,9 +1193,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   const contexts = new WeakMap<FastifyRequest, RequestContext>();
   const requestStartedAt = new WeakMap<FastifyRequest, bigint>();
   const factory = options.auditEventFactory ?? new AuditEventFactory();
-  const nativeAdminSockets = new Set<Socket>();
-  const nativeAdminCloseAudits = new Set<Promise<void>>();
-  let nativeAdminShuttingDown = false;
   const createAuthAccountOperation = {
     operationId: "createAuthAccount",
     method: "POST",
@@ -1110,86 +1246,57 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     tags: ["Authentication"],
     schema: {},
   })) as unknown as readonly OccApiRoute[];
-  const nativeAdminStatusOperation = {
-    operationId: "getAgentNativeAdmin",
-    method: "GET",
-    path: "/namespaces/:namespaceId/agents/:agentId/native-admin",
-    action: "openclaw.agents.native_admin.read",
-    iamAction: "administer",
-    resourceKind: "agent",
-    authorizationTarget: "agent",
-    summary: "Resolve native admin UI launch availability for one Agent",
-    tags: ["Agents"],
-    schema: {},
-  } as unknown as OccApiRoute;
-  const nativeAdminParamsSchema = {
-    type: "object",
-    additionalProperties: false,
-    required: ["namespaceId", "agentId"],
-    properties: {
-      namespaceId: { type: "string", minLength: 1, maxLength: 200 },
-      agentId: { type: "string", minLength: 1, maxLength: 200 },
-    },
-  };
-  const nativeAdminMetaSchema = {
-    type: "object",
-    additionalProperties: false,
-    required: ["requestId"],
-    properties: { requestId: { type: "string" } },
-  };
-  const nativeAdminErrorSchema = { $ref: "ErrorResponse#" };
-  const nativeAdminStatusDataSchema = {
-    type: "object",
-    additionalProperties: false,
-    required: ["status"],
-    properties: {
-      status: {
-        type: "string",
-        enum: ["available", "disabled", "stopped", "unavailable", "unsupported"],
-      },
-      host: { type: "string" },
-      origin: { type: "string", format: "uri" },
-      activeRevisionId: { type: "string" },
-      url: { type: "string", format: "uri" },
-    },
-  };
-  const nativeAdminStatusSchema = {
-    operationId: nativeAdminStatusOperation.operationId,
-    summary: nativeAdminStatusOperation.summary,
-    description:
-      "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
-    tags: [...nativeAdminStatusOperation.tags],
-    security: [{ sessionCookie: [] }],
-    "x-openclaw-permissions": [{ action: "administer", resourceKind: "agent", scope: "requested" }],
-    params: nativeAdminParamsSchema,
-    response: {
-      200: {
-        description: "OK",
-        type: "object",
-        additionalProperties: false,
-        required: ["data", "meta"],
-        properties: { data: nativeAdminStatusDataSchema, meta: nativeAdminMetaSchema },
-      },
-      401: { description: "Unauthorized", ...nativeAdminErrorSchema },
-      403: { description: "Forbidden", ...nativeAdminErrorSchema },
-      404: { description: "Not Found", ...nativeAdminErrorSchema },
-      503: { description: "Service Unavailable", ...nativeAdminErrorSchema },
-    },
-  } as DocumentedFastifySchema;
+  const runtimeLogLimiter = new RuntimeLogLimiter();
+  const runtimeLogCursor =
+    options.agentRuntimeLogs?.enabled === true
+      ? createRuntimeLogCursorCodec(options.agentRuntimeLogs.cursorSecret)
+      : undefined;
   function event(
     operation: OccApiRoute,
     request: FastifyRequest,
     resource: ResourceRef,
-    kind: "bootstrap" | "mutation" | "authorization_denial",
+    kind: AuditEventKind,
     context?: RequestContext,
     evidence?: AuthorizationEvidence,
-    result?: { readonly outcome: "success" | "denied" | "failure"; readonly reasonCode?: string },
+    result?: {
+      readonly outcome: "success" | "denied" | "failure";
+      readonly reasonCode?: string;
+      // A route's own denial explanation. It passes through the factory with the rest of the
+      // event, so its reason is redacted and capped and its details are redacted.
+      readonly decisionReason?: string;
+      readonly details?: Readonly<Record<string, unknown>>;
+    },
     authorization?: NonNullable<AuthorizationDeniedError["authorization"]>,
     validatedAuthorization?: Readonly<DeployAgentAuthorization>,
   ): AuditEvent {
     const authorizationEvidence = validatedAuthorization?.decision.evidence ?? evidence;
-    const outcome =
-      result?.outcome ?? (kind === "bootstrap" || kind === "mutation" ? "success" : "denied");
+    const outcome = result?.outcome ?? (kind === "authorization_denial" ? "denied" : "success");
+    const evidenceDetails =
+      context === undefined || authorizationEvidence === undefined
+        ? undefined
+        : {
+            iamEvidence: {
+              ...(authorizationEvidence.identityId === undefined
+                ? {}
+                : { identityId: authorizationEvidence.identityId }),
+              groupIds: authorizationEvidence.groupIds,
+              bindingIds: authorizationEvidence.bindingIds,
+              roleIds: authorizationEvidence.roleIds,
+              restrictionIds: authorizationEvidence.restrictionIds,
+            },
+          };
+    // A request admitted by a service key names that key (its non-secret ID), so an
+    // administrator can tell which of a ServicePrincipal's keys acted. `serviceKeyId` stays
+    // the key a key-management event acts on.
+    const admitted = admissions.get(request);
+    const actorKeyDetails =
+      admitted?.method === "api_key" && admitted.serviceKeyId !== undefined
+        ? { actorServiceKeyId: admitted.serviceKeyId }
+        : undefined;
+    const details =
+      result?.details === undefined && actorKeyDetails === undefined
+        ? evidenceDetails
+        : { ...evidenceDetails, ...result?.details, ...actorKeyDetails };
     return factory.create({
       installationId,
       ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
@@ -1227,20 +1334,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   ...(outcome === "denied" && authorizationEvidence.restrictionIds.length > 0
                     ? { decisionReason: "A matching Restriction denied the operation." }
                     : {}),
-                  details: {
-                    iamEvidence: {
-                      ...(authorizationEvidence.identityId === undefined
-                        ? {}
-                        : { identityId: authorizationEvidence.identityId }),
-                      groupIds: authorizationEvidence.groupIds,
-                      bindingIds: authorizationEvidence.bindingIds,
-                      roleIds: authorizationEvidence.roleIds,
-                      restrictionIds: authorizationEvidence.restrictionIds,
-                    },
-                  },
                 }),
           }),
-      action: operation.action,
+      ...(result?.decisionReason === undefined ? {} : { decisionReason: result.decisionReason }),
+      ...(details === undefined ? {} : { details }),
+      action: auditAction(operation, request),
       resource,
       outcome,
       ...(result?.reasonCode === undefined
@@ -1249,6 +1347,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           : {}
         : { reasonCode: result.reasonCode }),
     });
+  }
+
+  /** Log views and downloads share a route and permissions but not an audit action. */
+  function auditAction(operation: OccApiRoute, request: FastifyRequest): string {
+    return operation.operationId === "getAgentDeploymentRuntimeLogs" &&
+      isRuntimeLogDownload(request.query as AgentRuntimeLogsQuery)
+      ? RUNTIME_LOG_DOWNLOAD_ACTION
+      : operation.action;
   }
 
   function selectedIAMDriver(): IAMDriver {
@@ -1261,274 +1367,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return selected;
     } catch {
       throw dependencyUnavailable();
-    }
-  }
-
-  function dependencyUnavailable(): RequestFailure {
-    return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
-  }
-
-  function requireNativeAdminHumanSession(request: FastifyRequest, context: RequestContext) {
-    const admitted = admissions.get(request);
-    if (admitted?.method !== "session") {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
-    }
-    const session = admitted.session;
-    if (session.userId !== context.subject || Date.parse(session.expiresAt) <= Date.now()) {
-      throw failure(401, "UNAUTHENTICATED", "The caller did not provide valid credentials.");
-    }
-    return session;
-  }
-
-  async function appendNativeAdminSocketAudit(
-    eventName: "connect" | "close",
-    resolution: NativeAdminProxyResolution,
-    socketEvent: {
-      readonly connectionId: string;
-      readonly closeReason?: NativeAdminWebSocketCloseReason;
-    },
-  ): Promise<void> {
-    await options.auditSink.append(
-      factory.create({
-        installationId,
-        namespaceId: resolution.namespaceId,
-        kind: "mutation",
-        source: "occ",
-        actor: {
-          principalId: resolution.actorId,
-          issuer: resolution.actorIssuer,
-          subject: resolution.actorSubject,
-        },
-        iamDriverId: selectedIAMDriver().id,
-        authorization: {
-          principalId: resolution.actorId,
-          action: "administer",
-          resource: {
-            kind: "agent",
-            id: resolution.agentId,
-            namespaceId: resolution.namespaceId,
-          },
-        },
-        action: `openclaw.agents.native_admin.websocket.${eventName}`,
-        resource: {
-          kind: "agent",
-          id: resolution.agentId,
-          namespaceId: resolution.namespaceId,
-        },
-        outcome: "success",
-        details: {
-          nativeAdmin: {
-            event: eventName,
-            connectionId: socketEvent.connectionId,
-            ...(socketEvent.closeReason === undefined
-              ? {}
-              : { closeReason: socketEvent.closeReason }),
-            parentSessionId: resolution.parentSessionId,
-            revisionId: resolution.revisionId,
-            host: resolution.target.host,
-          },
-        },
-      }),
-    );
-  }
-
-  async function appendNativeAdminProxyDenialAudit(
-    admission: NativeAdminProxyAdmission | undefined,
-  ): Promise<void> {
-    if (
-      admission === undefined ||
-      !("denied" in admission) ||
-      admission.actualAuthorizationDenied !== true ||
-      admission.authorization === undefined ||
-      !isNonEmptyString(admission.actorId) ||
-      !isNonEmptyString(admission.actorIssuer) ||
-      !isNonEmptyString(admission.actorSubject) ||
-      !isNonEmptyString(admission.namespaceId) ||
-      !isNonEmptyString(admission.agentId)
-    ) {
-      return;
-    }
-    await options.auditSink.append(
-      factory.create({
-        installationId,
-        namespaceId: admission.namespaceId,
-        kind: "authorization_denial",
-        source: "occ",
-        actor: {
-          principalId: admission.actorId,
-          issuer: admission.actorIssuer,
-          subject: admission.actorSubject,
-        },
-        iamDriverId: selectedIAMDriver().id,
-        authorization: { principalId: admission.actorId, ...admission.authorization },
-        action: "openclaw.agents.native_admin.proxy.authorize",
-        resource: {
-          kind: "agent",
-          id: admission.agentId,
-          namespaceId: admission.namespaceId,
-        },
-        outcome: "denied",
-        reasonCode: admission.reason.toUpperCase(),
-        ...(admission.evidence?.restrictionIds.length
-          ? { decisionReason: "A matching Restriction denied the operation." }
-          : {}),
-        details: {
-          nativeAdmin: {
-            reason: admission.reason,
-            ...(isNonEmptyString(admission.revisionId) ? { revisionId: admission.revisionId } : {}),
-            ...(isNonEmptyString(admission.host) ? { host: admission.host } : {}),
-          },
-          ...(admission.evidence === undefined
-            ? {}
-            : {
-                iamEvidence: {
-                  ...(admission.evidence.identityId === undefined
-                    ? {}
-                    : { identityId: admission.evidence.identityId }),
-                  groupIds: admission.evidence.groupIds,
-                  bindingIds: admission.evidence.bindingIds,
-                  roleIds: admission.evidence.roleIds,
-                  restrictionIds: admission.evidence.restrictionIds,
-                },
-              }),
-        },
-      }),
-    );
-  }
-
-  function nativeAdminAuthority(
-    hostHeader: string | readonly string[] | undefined,
-  ): string | undefined {
-    if (Array.isArray(hostHeader) || !isNonEmptyString(hostHeader)) {
-      return undefined;
-    }
-    const raw = hostHeader.trim();
-    if (raw !== hostHeader) {
-      return undefined;
-    }
-    const trimmed = raw.toLowerCase();
-    if (
-      trimmed.includes("/") ||
-      trimmed.includes("\\") ||
-      trimmed.includes("@") ||
-      trimmed.includes("?") ||
-      trimmed.includes("#")
-    ) {
-      return undefined;
-    }
-    try {
-      const parsed = new URL(`https://${trimmed}`);
-      if (parsed.username.length > 0 || parsed.password.length > 0 || parsed.pathname !== "/") {
-        return undefined;
-      }
-      return parsed.host;
-    } catch {
-      return undefined;
-    }
-  }
-
-  function nativeAdminHostname(
-    hostHeader: string | readonly string[] | undefined,
-  ): string | undefined {
-    const authority = nativeAdminAuthority(hostHeader);
-    if (authority === undefined) {
-      return undefined;
-    }
-    return new URL(`https://${authority}`).hostname.toLowerCase();
-  }
-
-  function publicOriginHostname(): string | undefined {
-    if (publicOrigin === undefined) {
-      return undefined;
-    }
-    try {
-      return new URL(publicOrigin).hostname.toLowerCase();
-    } catch {
-      return undefined;
-    }
-  }
-
-  function isNativeAdminDomainHost(hostname: string | undefined): hostname is string {
-    if (hostname === undefined || nativeAdminDomain === undefined) {
-      return false;
-    }
-    return hostname !== publicOriginHostname() && hostname.endsWith(`.${nativeAdminDomain}`);
-  }
-
-  function isNativeAdminAgentHost(hostname: string | undefined): hostname is string {
-    return isNativeAdminDomainHost(hostname) && hostname.startsWith("agent-");
-  }
-
-  function nativeAdminPathname(url: string | undefined): string {
-    return url?.split("?", 1)[0] || "/";
-  }
-
-  function isNativeAdminReservedPrefix(url: string | undefined): boolean {
-    return nativeAdminPathname(url).startsWith("/__occ/native-admin/");
-  }
-
-  async function boundedNativeAdminAdmission<T>(operation: Promise<T>): Promise<T | undefined> {
-    let timeout: NodeJS.Timeout | undefined;
-    try {
-      return await Promise.race([
-        operation,
-        new Promise<undefined>((resolve) => {
-          const timer = setTimeout(
-            () => resolve(undefined),
-            NATIVE_ADMIN_PROXY_ADMISSION_TIMEOUT_MS,
-          );
-          timeout = timer;
-          timer.unref();
-        }),
-      ]);
-    } catch {
-      return undefined;
-    } finally {
-      if (timeout !== undefined) {
-        clearTimeout(timeout);
-      }
-    }
-  }
-
-  async function drainNativeAdminCloseAudits(): Promise<void> {
-    if (nativeAdminCloseAudits.size === 0) {
-      return;
-    }
-    let timeout: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        Promise.allSettled([...nativeAdminCloseAudits]),
-        new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, NATIVE_ADMIN_CLOSE_AUDIT_DRAIN_MS);
-          timeout = timer;
-          timer.unref();
-        }),
-      ]);
-    } finally {
-      if (timeout !== undefined) {
-        clearTimeout(timeout);
-      }
-    }
-  }
-
-  async function nativeAdminProxyTransportContext(
-    resolution: NativeAdminProxyResolution | undefined,
-  ): Promise<NativeAdminProxyContext | undefined> {
-    if (resolution === undefined || options.nativeAdminGatewayApiKey === undefined) {
-      return undefined;
-    }
-    try {
-      const apiKey = await options.nativeAdminGatewayApiKey();
-      if (!isNonEmptyString(apiKey)) {
-        return undefined;
-      }
-      return {
-        gatewayBase: resolution.gatewayBase,
-        agentOrigin: resolution.target.origin,
-        apiKey,
-      };
-    } catch {
-      return undefined;
     }
   }
 
@@ -1696,6 +1534,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     context?: RequestContext,
     evidence?: AuthorizationEvidence,
     authorization?: NonNullable<AuthorizationDeniedError["authorization"]>,
+    explanation?: {
+      readonly decisionReason: string;
+      readonly reasonCode?: string;
+      readonly details: Readonly<Record<string, unknown>>;
+    },
   ): Promise<void> {
     try {
       await options.auditSink.append(
@@ -1706,7 +1549,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           kind,
           context,
           evidence,
-          undefined,
+          explanation === undefined ? undefined : { outcome: "denied", ...explanation },
           authorization,
         ),
       );
@@ -1746,10 +1589,36 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
   }
 
+  const nativeAdmin = createNativeAdminAccess({
+    app,
+    installationId,
+    publicOrigin,
+    factory,
+    getController: () => controller,
+    selectedIAMDriver,
+    getContext: (request) => contexts.get(request),
+    getAdmission: (request) => admissions.get(request),
+    auth: options.auth,
+    nativeAdmin: options.nativeAdmin,
+    nativeAdminGatewayApiKey: options.nativeAdminGatewayApiKey,
+    webSocketLeaseIntervalMs: nativeAdminWebSocketLeaseIntervalMs,
+    auditSink: options.auditSink,
+  });
+
+  const handlers: ResourceHandlers = {
+    ...resourceHandlers,
+    ...createAgentHandlers({
+      resolveHarness: options.resolveHarness,
+      requireCredentialCsrf: (request) => requireWorkspaceFileCsrf(request, true),
+      rejectDeployment: (request, context) =>
+        rejectedMutation(context.operation, request, context, "NAMESPACE_NOT_READY"),
+    }),
+  };
+
   app.addHook("onRequest", async (request, reply) => {
     requestStartedAt.set(request, process.hrtime.bigint());
     responseHeaders(reply, request.id);
-    if (await interceptNativeAdminHttp(request, reply)) {
+    if (await nativeAdmin.interceptHttp(request, reply)) {
       return;
     }
     const contentLength = request.headers["content-length"];
@@ -1795,16 +1664,29 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (
       Object.keys(request.query as Record<string, unknown>).length > 0 &&
       operation.operationId !== "listRepositoryOptions" &&
-      operation.operationId !== "listAgentRepositoryOptions"
+      operation.operationId !== "listAgentRepositoryOptions" &&
+      operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
+      operation.operationId !== "deleteServiceAccount"
     ) {
-      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+      throw failure(
+        400,
+        "INVALID_REQUEST",
+        "The request does not match the operation contract: this operation accepts no query parameters.",
+      );
     }
     for (const [parameter, pattern] of Object.entries(RESOURCE_ID)) {
       if (
         params[parameter] !== undefined &&
         (typeof params[parameter] !== "string" || !pattern.test(params[parameter] as string))
       ) {
-        throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+        // Names the path parameter and its syntax only; nothing about any stored resource.
+        const prefix = RESOURCE_ID_PREFIX[parameter as keyof typeof RESOURCE_ID_PREFIX];
+        throw failure(
+          400,
+          "INVALID_REQUEST",
+          `The request does not match the operation contract: params /${parameter} has an invalid format; expected ${prefix} followed by a lowercase version 4 UUID.`,
+          [{ path: `/${parameter}`, code: "INVALID_FORMAT" }],
+        );
       }
     }
 
@@ -1963,6 +1845,29 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       await denial(operation, request, "authorization_denial", context);
       throw failure(403, "FORBIDDEN", "The admitted Namespace does not match.");
     }
+  }
+
+  /**
+   * Preset writes accept bodies up to PRESET_BODY_LIMIT (6 MiB + 8 KiB), far above the
+   * general limit. Their grant check needs only the path and the caller, so it runs here,
+   * in onRequest, before the body is read: a caller without the grant gets the same 403 or
+   * 404 and audit row as when the check ran in the handler, and the controller never
+   * buffers the body. The handler repeats the check in its transaction.
+   */
+  async function authorizeBeforeBody(request: FastifyRequest, operation: OccApiRoute) {
+    const context = contexts.get(request);
+    if (!context) {
+      throw dependencyUnavailable();
+    }
+    if (!controller) {
+      throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+    }
+    const params = request.params as Record<string, string>;
+    await controller.authorizePresetWrite(
+      context.actorId,
+      params.namespaceId as string,
+      operation.operationId === "updatePreset" ? params.presetId : undefined,
+    );
   }
 
   async function perform(
@@ -2156,6 +2061,59 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (
+      operation.operationId === "startAgentDeviceAuthorization" ||
+      operation.operationId === "startSavedAgentDeviceAuthorization" ||
+      operation.operationId === "pollAgentDeviceAuthorization" ||
+      operation.operationId === "pollSavedAgentDeviceAuthorization" ||
+      operation.operationId === "cancelAgentDeviceAuthorization" ||
+      operation.operationId === "cancelSavedAgentDeviceAuthorization"
+    ) {
+      const agentId = params.agentId;
+      let result;
+      if (operation.operationId.startsWith("start")) {
+        result = await controller.startAgentDeviceAuthorization(
+          context.actorId,
+          namespaceId,
+          body?.harnessId as string,
+          agentId,
+        );
+      } else if (operation.operationId.startsWith("poll")) {
+        result = await controller.pollAgentDeviceAuthorization(
+          context.actorId,
+          namespaceId,
+          params.secretId as string,
+          agentId,
+        );
+      } else {
+        await controller.cancelAgentDeviceAuthorization(
+          context.actorId,
+          namespaceId,
+          params.secretId as string,
+          agentId,
+        );
+      }
+      // Clients poll on the provider interval; audit the transition, not every pending poll.
+      if (result?.status !== "pending" || operation.operationId.startsWith("start")) {
+        await options.auditSink.append(
+          event(
+            operation,
+            request,
+            { kind: "agent", id: agentId ?? namespaceId, namespaceId },
+            "mutation",
+            context,
+          ),
+        );
+      }
+      reply.header("cache-control", "no-store");
+      if (result === undefined) {
+        reply.status(204).send();
+      } else {
+        reply.send({ data: result, meta: { requestId: request.id } });
+      }
+      return;
+    }
+
     if (operation.operationId === "discoverAgentModels") {
       const models = await controller.discoverAgentModels(context.actorId, namespaceId, {
         provider: body?.provider as string,
@@ -2169,6 +2127,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPlugins") {
       const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
+        ...(body?.oauthLogin === undefined
+          ? {}
+          : { oauthLogin: body.oauthLogin as SecretReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2182,6 +2143,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPluginDetails") {
       const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
+        ...(body?.oauthLogin === undefined
+          ? {}
+          : { oauthLogin: body.oauthLogin as SecretReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2209,6 +2173,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         params.agentId as string,
         {
+          ...(body?.oauthLogin === undefined
+            ? {}
+            : { oauthLogin: body.oauthLogin as SecretReference }),
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
@@ -2223,7 +2190,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         context.actorId,
         namespaceId,
         params.agentId as string,
-        { pluginId: body?.pluginId as string },
+        {
+          pluginId: body?.pluginId as string,
+          ...(body?.oauthLogin === undefined
+            ? {}
+            : { oauthLogin: body.oauthLogin as SecretReference }),
+        },
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });
@@ -2247,7 +2219,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    const resourceHandler = resourceHandlers[operation.operationId];
+    const resourceHandler = handlers[operation.operationId];
     if (resourceHandler) {
       await resourceHandler({
         controller,
@@ -2257,8 +2229,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
-        mutationEvent: (resource, details) => {
-          const recorded = event(operation, request, resource, "mutation", context);
+        mutationEvent: (resource, details, authorization, failure) => {
+          const recorded = event(
+            operation,
+            request,
+            resource,
+            "mutation",
+            context,
+            undefined,
+            failure === undefined
+              ? undefined
+              : { outcome: "failure", reasonCode: failure.reasonCode },
+            undefined,
+            authorization,
+          );
           return details === undefined
             ? recorded
             : { ...recorded, details: { ...recorded.details, ...details } };
@@ -2267,418 +2251,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "provisionAgent") {
-      const provisionBody = body as unknown as ProvisionAgentBody;
-      try {
-        normalizeInitialWorkspaceFiles(provisionBody.initialWorkspaceFiles);
-      } catch {
-        throw failure(
-          400,
-          "INVALID_REQUEST",
-          "Initial workspace files must use the four allowed names and valid Unicode without NUL, within 16 KiB per file.",
-        );
-      }
-      if (
-        provisionBody.workspaceDefaultsId !== undefined &&
-        provisionBody.workspaceDefaultsId !== WORKSPACE_DEFAULTS_ID
-      ) {
-        throw failure(
-          409,
-          "RESOURCE_CONFLICT",
-          "Workspace defaults changed. Reload the create form before submitting.",
-        );
-      }
-      const provisioned = await controller.provisionAgent(
-        context.actorId,
-        {
-          requestId: provisionBody.requestId,
-          namespaceId,
-          name: provisionBody.name,
-          configuration: provisionBody.configuration as ProvisionAgentInput["configuration"],
-          ...(provisionBody.initialWorkspaceFiles === undefined
-            ? {}
-            : {
-                initialWorkspaceFiles: provisionBody.initialWorkspaceFiles as InitialWorkspaceFiles,
-              }),
-          ...(provisionBody.workspaceDefaultsId === undefined
-            ? {}
-            : { workspaceDefaultsId: provisionBody.workspaceDefaultsId }),
-          ...(provisionBody.backendId === undefined ? {} : { backendId: provisionBody.backendId }),
-          ...(provisionBody.executionMode === undefined
-            ? {}
-            : { executionMode: provisionBody.executionMode as HarnessExecutionMode }),
-          ...(provisionBody.harnessAuth === undefined
-            ? {}
-            : {
-                harnessAuth: provisionBody.harnessAuth as NonNullable<
-                  ProvisionAgentInput["harnessAuth"]
-                >,
-              }),
-          ...(provisionBody.plugins === undefined
-            ? {}
-            : { plugins: provisionBody.plugins as never }),
-          ...(provisionBody.pluginApprovers === undefined
-            ? {}
-            : { pluginApprovers: provisionBody.pluginApprovers as never }),
-          ...(provisionBody.repositoryBindings === undefined
-            ? {}
-            : {
-                repositoryBindings:
-                  provisionBody.repositoryBindings as readonly RepositoryBindingRequest[],
-              }),
-          ...(provisionBody?.repositoryAccess === undefined
-            ? {}
-            : { repositoryAccess: provisionBody.repositoryAccess as RepositoryAccess }),
-        },
-        (provisioned) =>
-          event(
-            operation,
-            request,
-            {
-              kind: "agent",
-              id: provisioned.provisioning.agentId ?? provisioned.provisioning.workId,
-              namespaceId,
-            },
-            "mutation",
-            context,
-          ),
-      );
-      const result = {
-        provisioning: clientAgentProvisioning(provisioned.provisioning, namespaceId),
-      };
-      reply.status(202).send({ data: result, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (
-      operation.operationId === "listRepositoryOptions" ||
-      operation.operationId === "listAgentRepositoryOptions"
-    ) {
-      const query = request.query as { descriptionRefs?: string };
-      const descriptionRefs = query.descriptionRefs?.split(",") ?? [];
-      if (new Set(descriptionRefs).size !== descriptionRefs.length) {
-        throw failure(400, "INVALID_REQUEST", "Repository description references must be unique.");
-      }
-      const result = await controller!
-        .listRepositoryOptions(
-          context.actorId,
-          namespaceId,
-          operation.operationId === "listAgentRepositoryOptions" ? params.agentId : undefined,
-          descriptionRefs,
-        )
-        .catch((error: unknown) => {
-          if (error instanceof RepositoryOptionsUnavailableError) {
-            throw failure(
-              503,
-              "REPOSITORY_OPTIONS_UNAVAILABLE",
-              "Repository options are unavailable.",
-            );
-          }
-          throw error;
-        });
-      reply.send({
-        data: result.options.map(
-          ({ repositoryRef, displayName, allowedProfiles, description }) => ({
-            repositoryRef,
-            displayName,
-            allowedProfiles,
-            ...(description === undefined ? {} : { description }),
-          }),
-        ),
-        meta: { requestId: request.id, descriptionsPending: result.descriptionsPending },
-      });
-      return;
-    }
-
-    if (operation.operationId === "createAgent") {
-      try {
-        normalizeInitialWorkspaceFiles(body?.initialWorkspaceFiles);
-      } catch {
-        throw failure(
-          400,
-          "INVALID_REQUEST",
-          "Initial workspace files must use the four allowed names and valid Unicode without NUL, within 16 KiB per file.",
-        );
-      }
-      if (
-        body?.workspaceDefaultsId !== undefined &&
-        body.workspaceDefaultsId !== WORKSPACE_DEFAULTS_ID
-      ) {
-        throw failure(
-          409,
-          "RESOURCE_CONFLICT",
-          "Workspace defaults changed. Reload the create form before submitting.",
-        );
-      }
-      const agent = await controller.transact(async (unit) => {
-        const created = await controller!.createAgent(context.actorId, {
-          namespaceId,
-          ...(body?.initialWorkspaceFiles === undefined
-            ? {}
-            : { initialWorkspaceFiles: body.initialWorkspaceFiles as InitialWorkspaceFiles }),
-          ...(body?.workspaceDefaultsId === undefined
-            ? {}
-            : { workspaceDefaultsId: body.workspaceDefaultsId as string }),
-          name: body?.name as string,
-          configurationId: body?.configurationId as string,
-          ...(body?.backendId === undefined ? {} : { backendId: body.backendId as string | null }),
-          ...(body?.executionMode === undefined
-            ? {}
-            : { executionMode: body.executionMode as HarnessExecutionMode }),
-          ...(body?.harnessAuth === undefined
-            ? {}
-            : { harnessAuth: body.harnessAuth as HarnessAuthBinding | null }),
-          ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
-          ...(body?.pluginApprovers === undefined
-            ? {}
-            : { pluginApprovers: body.pluginApprovers as never }),
-          ...(body?.repositoryBindings === undefined
-            ? {}
-            : {
-                repositoryBindings: body.repositoryBindings as readonly RepositoryBindingRequest[],
-              }),
-          ...(body?.repositoryAccess === undefined
-            ? {}
-            : { repositoryAccess: body.repositoryAccess as RepositoryAccess }),
-        });
-        await unit.audit.append(
-          event(
-            operation,
-            request,
-            { kind: "agent", id: created.id, namespaceId },
-            "mutation",
-            context,
-          ),
-        );
-        return clientAgent(created);
-      });
-      reply.status(201).send({ data: agent, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "listAgents") {
-      const agents = await controller.listAgents(context.actorId, namespaceId);
-      reply.send({ data: agents.map(clientAgent), meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "getAgentProvisioning") {
-      const workId = params.workId;
-      if (!workId) {
-        throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
-      }
-      const provisioned = await controller.getAgentProvisioning(
-        context.actorId,
-        namespaceId,
-        workId,
-      );
-      reply.send({
-        data: clientAgentProvisioning(provisioned.provisioning, namespaceId),
-        meta: { requestId: request.id },
-      });
-      return;
-    }
-
-    if (operation.operationId === "retryAgentProvisioning") {
-      const workId = params.workId;
-      if (!workId) {
-        throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
-      }
-      const provisioning = await controller.transact(async (unit) => {
-        const retried = await controller!.retryAgentProvisioning(
-          context.actorId,
-          namespaceId,
-          workId,
-        );
-        await unit.audit.append(
-          event(
-            operation,
-            request,
-            {
-              kind: "agent",
-              id: retried.provisioning.agentId ?? retried.provisioning.workId,
-              namespaceId,
-            },
-            "mutation",
-            context,
-          ),
-        );
-        return retried.provisioning;
-      });
-      reply.status(202).send({
-        data: clientAgentProvisioning(provisioning, namespaceId),
-        meta: { requestId: request.id },
-      });
-      return;
-    }
-
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
-    }
-    if (operation.operationId === "getAgent") {
-      reply.send({
-        data: clientAgent(
-          await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId),
-        ),
-        meta: { requestId: request.id },
-      });
-      return;
-    }
-
-    if (operation.operationId === "updateAgent") {
-      const agent = await controller.transact(async (unit) => {
-        const updated = await controller!.updateAgent(context.actorId, {
-          namespaceId,
-          agentId,
-          configurationId: body?.configurationId as string,
-          ...(body?.backendId === undefined ? {} : { backendId: body.backendId as string | null }),
-          ...(body?.executionMode === undefined
-            ? {}
-            : { executionMode: body.executionMode as HarnessExecutionMode }),
-          ...(body?.harnessAuth === undefined
-            ? {}
-            : { harnessAuth: body.harnessAuth as HarnessAuthBinding | null }),
-          ...(body?.plugins === undefined ? {} : { plugins: body.plugins as never }),
-          ...(body?.pluginApprovers === undefined
-            ? {}
-            : { pluginApprovers: body.pluginApprovers as never }),
-          ...(body?.repositoryBindings === undefined
-            ? {}
-            : {
-                repositoryBindings: body.repositoryBindings as readonly RepositoryBindingRequest[],
-              }),
-          ...(body?.repositoryAccess === undefined
-            ? {}
-            : { repositoryAccess: body.repositoryAccess as RepositoryAccess }),
-        });
-        await unit.audit.append(
-          event(
-            operation,
-            request,
-            { kind: "agent", id: updated.id, namespaceId },
-            "mutation",
-            context,
-          ),
-        );
-        return clientAgent(updated);
-      });
-      reply.send({ data: agent, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "deleteAgent") {
-      const agent = await controller.transact(async (unit) => {
-        const deleting = await controller!.deleteAgent(context.actorId, namespaceId, agentId);
-        await unit.audit.append(
-          event(
-            operation,
-            request,
-            { kind: "agent", id: deleting.id, namespaceId },
-            "mutation",
-            context,
-          ),
-        );
-        return clientAgent(deleting);
-      });
-      reply.status(202).send({ data: agent, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "getAgentRuntimeImages") {
-      const images = await controller.getAgentRuntimeImages(context.actorId, namespaceId, agentId);
-      reply.send({ data: images, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "getAgentRuntimeCredentials") {
-      const status = await controller.getAgentRuntimeCredentialStatus(
-        context.actorId,
-        namespaceId,
-        agentId,
-      );
-      reply.send({ data: status, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "provisionAgentRuntimeCredentials") {
-      requireWorkspaceFileCsrf(request, true);
-      const status = await controller.transact(async (unit) => {
-        const provisioned = await controller!.provisionAgentRuntimeCredentials(
-          context.actorId,
-          namespaceId,
-          agentId,
-          body as unknown as AgentRuntimeCredentialsBody,
-        );
-        try {
-          await unit.audit.append(
-            event(
-              operation,
-              request,
-              { kind: "agent", id: agentId, namespaceId },
-              "mutation",
-              context,
-            ),
-          );
-        } catch {
-          throw dependencyUnavailable();
-        }
-        return provisioned;
-      });
-      reply.send({ data: status, meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "deployAgent") {
-      try {
-        const admitted = await controller.deployAgentWithAuthorization(
-          context.actorId,
-          { namespaceId, agentId },
-          options.resolveHarness,
-          (admitted) =>
-            event(
-              operation,
-              request,
-              { kind: "agent_revision", id: admitted.revision.id, namespaceId },
-              "mutation",
-              context,
-              undefined,
-              undefined,
-              undefined,
-              admitted.authorization,
-            ),
-        );
-        const revision = clientRevision(admitted.revision);
-        reply.status(202).send({ data: revision, meta: { requestId: request.id } });
-        return;
-      } catch (error) {
-        if (error instanceof NamespaceNotReadyError) {
-          await rejectedMutation(operation, request, context, "NAMESPACE_NOT_READY");
-        }
-        throw error;
-      }
-    }
-
-    if (operation.operationId === "stopAgent") {
-      const stopped = await controller.transact(async (unit) => {
-        const agent = await controller!.stopAgent(context.actorId, namespaceId, agentId);
-        try {
-          await unit.audit.append(
-            event(
-              operation,
-              request,
-              { kind: "agent", id: agentId, namespaceId },
-              "mutation",
-              context,
-            ),
-          );
-        } catch {
-          throw dependencyUnavailable();
-        }
-        return clientAgent(agent);
-      });
-      reply.status(202).send({ data: stopped, meta: { requestId: request.id } });
-      return;
     }
 
     if (
@@ -2876,202 +2451,104 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       }
     }
 
-    if (operation.operationId === "listAgentRevisions") {
-      const revisions = await controller.listRevisions(context.actorId, namespaceId, agentId);
-      reply.send({
-        data: revisions.map(clientRevision),
-        meta: { requestId: request.id },
-      });
-      return;
-    }
-
-    if (operation.operationId === "getAgentRevision") {
-      const revision = await controller.getRevisionForBrowsing(
-        context.actorId,
-        namespaceId,
-        agentId,
-        params.revisionId as string,
-      );
-      reply.send({ data: clientRevision(revision), meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "getAgentDeployment") {
-      const status = await controller.getDeploymentStatus(
-        context.actorId,
-        namespaceId,
-        agentId,
-        params.deploymentId as string,
-      );
-      reply.send({ data: clientDeploymentStatus(status), meta: { requestId: request.id } });
-      return;
-    }
-
-    if (operation.operationId === "diagnoseAgentDeployment") {
-      const diagnostics = await controller.diagnoseAgentDeployment(
-        context.actorId,
-        namespaceId,
-        agentId,
-        params.deploymentId as string,
-      );
-      reply.send({ data: diagnostics, meta: { requestId: request.id } });
-      return;
+    if (
+      operation.operationId === "getAgentDeploymentRuntime" ||
+      operation.operationId === "getAgentDeploymentRuntimeLogs"
+    ) {
+      if (runtimeLogCursor === undefined) {
+        throw failure(
+          501,
+          "NOT_IMPLEMENTED",
+          "Agent runtime status and logs are disabled for this Installation.",
+        );
+      }
+      // Authorization comes first, inside the controller: a denied caller is refused (and
+      // audited) without taking a token, and only authorized Driver reads are limited.
+      const admitRead = <T>(read: () => Promise<T>): Promise<T> => {
+        runtimeLogLimiter.admit(context.actorId, agentId);
+        return runtimeLogLimiter.run(read);
+      };
+      // A client that disconnects cancels its Driver reads.
+      const disconnected = new AbortController();
+      const onClose = () => {
+        if (!reply.raw.writableEnded) {
+          disconnected.abort();
+        }
+      };
+      reply.raw.once("close", onClose);
+      try {
+        if (operation.operationId === "getAgentDeploymentRuntime") {
+          const description = await controller!.describeAgentRuntime(
+            context.actorId,
+            namespaceId,
+            agentId,
+            params.deploymentId as string,
+            disconnected.signal,
+            admitRead,
+          );
+          reply.send({ data: description, meta: { requestId: request.id } });
+          return;
+        }
+        const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+        const query = request.query as AgentRuntimeLogsQuery;
+        const download = isRuntimeLogDownload(query);
+        // A download is a fresh snapshot; it never continues a follow view.
+        if (download && query.cursor !== undefined) {
+          throw failure(
+            400,
+            "INVALID_REQUEST",
+            "The request does not match the operation contract: querystring /cursor cannot be combined with /download; a download always starts a new view.",
+            [{ path: "/cursor", code: "INVALID_VALUE" }],
+          );
+        }
+        const page = await controller!.readAgentRuntimeLogs(
+          context.actorId,
+          namespaceId,
+          agentId,
+          params.deploymentId as string,
+          runtimeLogQuery(query),
+          {
+            codec: runtimeLogCursor,
+            signal: disconnected.signal,
+            admitRead,
+            // Once per view or download, before the first Driver read; failure means
+            // no content.
+            admitView: async (admission, grant) => {
+              const base = event(
+                operation,
+                request,
+                target,
+                "access",
+                context,
+                undefined,
+                undefined,
+                { action: grant.action, resource: target },
+              );
+              await options.auditSink.append({
+                ...base,
+                details: { ...base.details, runtimeLogs: { ...admission } },
+              });
+            },
+          },
+        );
+        if (download) {
+          reply
+            .header("content-type", "text/plain; charset=utf-8")
+            .header(
+              "content-disposition",
+              `attachment; filename="${runtimeLogDownloadFileName(page, agentId)}"`,
+            )
+            .send(runtimeLogDownloadBody(page, agentId));
+          return;
+        }
+        reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
+        return;
+      } finally {
+        reply.raw.off("close", onClose);
+      }
     }
 
     throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
-  }
-
-  type NativeAdminTargetStatus = {
-    readonly agent: Agent;
-    readonly revision: AgentRevision;
-    readonly target: NativeAdminTarget;
-  };
-  type NativeAdminAvailability =
-    | { readonly status: "disabled" | "stopped" | "unavailable" }
-    | ({ readonly status: "stopped" | "unsupported" } & NativeAdminTargetStatus)
-    | ({ readonly status: "available"; readonly gatewayBase: string } & NativeAdminTargetStatus);
-
-  async function resolveNativeAdminAvailability(input: {
-    readonly actorId: string;
-    readonly namespaceId: string;
-    readonly agentId: string;
-  }): Promise<NativeAdminAvailability> {
-    if (!controller) {
-      throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
-    }
-    if (options.nativeAdmin?.enabled !== true) {
-      await controller.getAdministerableAgent(input.actorId, input.namespaceId, input.agentId);
-      return { status: "disabled" };
-    }
-    if (publicOrigin === undefined || nativeAdminDomain === undefined) {
-      throw dependencyUnavailable();
-    }
-    let selection;
-    try {
-      selection = await controller.getAdministerableActiveAgentRevision(
-        input.actorId,
-        input.namespaceId,
-        input.agentId,
-      );
-    } catch (error) {
-      // This administering lookup conflicts only when the authorized Agent is stopped without an active revision.
-      if (error instanceof ResourceConflictError) {
-        return { status: "stopped" };
-      }
-      if (isDependencyUnavailable(error)) {
-        return { status: "unavailable" };
-      }
-      throw error;
-    }
-    const { agent, revision } = selection;
-    const target = nativeAdminTarget({
-      publicOrigin,
-      installationId,
-      agent,
-      revision,
-      domain: nativeAdminDomain,
-    });
-    if (agent.desiredRuntimeState !== "running") {
-      return { status: "stopped", agent, revision, target };
-    }
-    if (!nativeAdminConfigurationSupported(revision, target.origin)) {
-      return { status: "unsupported", agent, revision, target };
-    }
-    let compute: ComputeDriver;
-    try {
-      compute = controller.selectedDriver("compute");
-    } catch {
-      throw dependencyUnavailable();
-    }
-    const gatewayBase = nativeAdminGatewayHttpBase(compute.getGatewayEndpoint?.(revision) ?? "");
-    if (gatewayBase === undefined) {
-      return { status: "unsupported", agent, revision, target };
-    }
-    return { status: "available", agent, revision, target, gatewayBase };
-  }
-
-  async function resolveNativeAdminAgentHost(
-    hostname: string,
-  ): Promise<Pick<Agent, "id" | "namespaceId"> | undefined> {
-    const domain = nativeAdminDomain;
-    if (!controller || domain === undefined) {
-      return undefined;
-    }
-    return controller.resolveAgentReference(
-      (agent) => deriveNativeAdminHost(installationId, agent, domain) === hostname,
-    );
-  }
-
-  function nativeAdminAvailabilityData(availability: NativeAdminAvailability) {
-    if (!("target" in availability)) {
-      return { status: availability.status };
-    }
-    return {
-      status: availability.status,
-      host: availability.target.host,
-      origin: availability.target.origin,
-      activeRevisionId: availability.revision.id,
-      url: availability.target.url,
-    };
-  }
-
-  async function requireAvailableNativeAdminTarget(input: {
-    readonly actorId: string;
-    readonly namespaceId: string;
-    readonly agentId: string;
-    readonly expectedHost?: string;
-    readonly expectedRevisionId?: string;
-  }) {
-    if (!controller) {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
-    }
-    const availability = await resolveNativeAdminAvailability(input);
-    if (availability.status === "disabled") {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
-    }
-    if (
-      availability.status === "unsupported" &&
-      input.expectedRevisionId !== undefined &&
-      availability.revision.id !== input.expectedRevisionId
-    ) {
-      throw failure(409, "RESOURCE_CONFLICT", "The active AgentRevision changed.");
-    }
-    if (availability.status !== "available") {
-      throw dependencyUnavailable();
-    }
-    if (
-      input.expectedRevisionId !== undefined &&
-      availability.revision.id !== input.expectedRevisionId
-    ) {
-      throw failure(409, "RESOURCE_CONFLICT", "The active AgentRevision changed.");
-    }
-    if (input.expectedHost !== undefined && availability.target.host !== input.expectedHost) {
-      throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
-    }
-    return availability;
-  }
-
-  async function getNativeAdminStatus(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const context = contexts.get(request);
-    if (!context) {
-      throw dependencyUnavailable();
-    }
-    const params = request.params as Record<string, string | undefined>;
-    const namespaceId = params.namespaceId;
-    const agentId = params.agentId;
-    if (!isNonEmptyString(namespaceId) || !isNonEmptyString(agentId)) {
-      throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
-    }
-    requireNativeAdminHumanSession(request, context);
-    const availability = await resolveNativeAdminAvailability({
-      actorId: context.actorId,
-      namespaceId,
-      agentId,
-    });
-    reply.send({
-      data: nativeAdminAvailabilityData(availability),
-      meta: { requestId: request.id },
-    });
   }
 
   void app.register(async (routes) => {
@@ -3096,7 +2573,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           type: "object",
           additionalProperties: false,
           required: ["code", "message"],
-          properties: { code: { type: "string" }, message: { type: "string" } },
+          properties: {
+            code: { type: "string" },
+            message: { type: "string" },
+            // Schema 400s point at the rejected field; without this the serializer drops it.
+            details: { type: "array", maxItems: 32, items: ErrorDetailSchema },
+          },
         },
         meta,
       },
@@ -3106,6 +2588,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       401: { description: "Unauthorized", ...error },
       503: { description: "Service Unavailable", ...error },
     });
+    // Every route that reads a body answers an oversized one 413 and a non-JSON one 415.
+    const bodyErrors = {
+      413: { description: "Payload Too Large", ...error },
+      415: { description: "Unsupported Media Type", ...error },
+    };
     const accountBody = (
       createAuthAccountOperation.schema as {
         readonly body: { readonly properties: Record<string, unknown> };
@@ -3146,7 +2633,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           summary: operation.summary,
           description: creating
             ? "Requires a session or Installation-scoped service key with administer on the Installation. Issues a Better Auth key for an existing non-Agent ServicePrincipal in its exact scope when the caller already holds every IAM grant of that ServicePrincipal at the same or a broader scope; creates no identity or IAM grant. The plaintext key is returned only here."
-            : "Requires a session or Installation-scoped service key with administer on the Installation. Deletes the stored Better Auth key; subsequent requests cannot authenticate with it.",
+            : "Requires a session or Installation-scoped service key with administer on the Installation, plus every IAM grant of the key's ServicePrincipal, as for issuance. Deletes the stored Better Auth key; subsequent requests cannot authenticate with it.",
           tags: [...operation.tags],
           security: [{ sessionCookie: [] }, { serviceApiKey: [] }],
           "x-openclaw-permissions": [
@@ -3161,7 +2648,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   properties: {
                     servicePrincipalId: { type: "string", minLength: 1, maxLength: 200 },
                     namespaceId: { type: "string", pattern: RESOURCE_ID.namespaceId.source },
-                    name: { type: "string", minLength: 1, maxLength: 32, pattern: "\\S" },
+                    name: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: SERVICE_KEY_NAME_MAX_LENGTH,
+                      pattern: "\\S",
+                    },
                     expiresIn: {
                       type: "integer",
                       minimum: 86400,
@@ -3198,6 +2690,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
+            ...(creating ? bodyErrors : {}),
           },
         } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, operation),
@@ -3211,10 +2704,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw failure(409, "RESOURCE_CONFLICT", "Bootstrap the Installation first.");
           }
           if (!creating && request.body !== undefined) {
+            // The same wording as OCC's operations that take no body.
             throw failure(
               400,
               "INVALID_REQUEST",
-              "The request does not match the operation contract.",
+              "The request does not match the operation contract: this operation accepts no request body.",
             );
           }
           const { selected, target, decision } = await requireInstallationAdmin(
@@ -3222,16 +2716,67 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             operation,
             context,
           );
-          const audit = (key: { id: string; servicePrincipalId: string }) => {
+          // Names the key acted on by ID and its non-secret name; never the credential.
+          const audit = (key: { id: string; servicePrincipalId: string; name: string }) => {
             const base = event(operation, request, target, "mutation", context, decision.evidence);
             return {
               ...base,
               details: {
                 ...base.details,
                 serviceKeyId: key.id,
+                serviceKeyName: key.name,
                 servicePrincipalId: key.servicePrincipalId,
               },
             };
+          };
+          // Issuing or revoking a key acts with every grant of its ServicePrincipal, so the
+          // caller must already hold all of them; Installation administer alone is not enough.
+          const requireCoverage = async (servicePrincipalId: string) => {
+            let covered;
+            try {
+              covered =
+                typeof selected.coversIdentityAccess === "function" &&
+                (await selected.coversIdentityAccess({
+                  principalId: context.actorId,
+                  targetIdentityId: servicePrincipalId,
+                })) === true;
+            } catch {
+              throw dependencyUnavailable();
+            }
+            if (covered) {
+              return;
+            }
+            try {
+              await options.auditSink.append(
+                event(
+                  operation,
+                  request,
+                  target,
+                  "authorization_denial",
+                  context,
+                  decision.evidence,
+                  {
+                    outcome: "denied",
+                    reasonCode: "SERVICE_PRINCIPAL_GRANTS_NOT_COVERED",
+                    decisionReason:
+                      "The caller does not hold every grant of the target ServicePrincipal.",
+                    details: {
+                      servicePrincipalId,
+                      ...(creating
+                        ? {}
+                        : { serviceKeyId: (request.params as { keyId: string }).keyId }),
+                    },
+                  },
+                ),
+              );
+            } catch {
+              throw dependencyUnavailable();
+            }
+            throw failure(
+              403,
+              "FORBIDDEN",
+              "The caller does not hold every grant of the target ServicePrincipal.",
+            );
           };
           if (creating) {
             const body = request.body as {
@@ -3263,25 +2808,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               );
             }
             // A key carries all of its principal's grants; never issue beyond the caller's own.
-            let covered;
-            try {
-              covered =
-                typeof selected.coversIdentityAccess === "function" &&
-                (await selected.coversIdentityAccess({
-                  principalId: context.actorId,
-                  targetIdentityId: principal.id,
-                })) === true;
-            } catch {
-              throw dependencyUnavailable();
-            }
-            if (!covered) {
-              await denial(operation, request, "authorization_denial", context, decision.evidence);
-              throw failure(
-                403,
-                "FORBIDDEN",
-                "The caller does not hold every grant of the target ServicePrincipal.",
-              );
-            }
+            await requireCoverage(principal.id);
             let key;
             try {
               key = await options.auth.createServiceKey({
@@ -3290,10 +2817,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 ...(body.expiresIn === undefined ? {} : { expiresIn: body.expiresIn }),
               });
               await options.auditSink.append(audit(key));
-            } catch {
+            } catch (error) {
               // Never return an unaudited credential; remove it if audit persistence fails.
               if (key) {
                 await options.auth.revokeServiceKey(key).catch(() => {});
+              }
+              // The schema admitted this name, so a refusal is a contract mismatch, not an
+              // outage: answer as the schema does for a name over its bound.
+              if (error instanceof ServiceKeyNameRefused) {
+                throw failure(
+                  400,
+                  "INVALID_REQUEST",
+                  `The request does not match the operation contract: body /name is too long (expected at most ${SERVICE_KEY_NAME_MAX_LENGTH} characters).`,
+                  [{ path: "/name", code: "TOO_LONG" }],
+                );
               }
               throw dependencyUnavailable();
             }
@@ -3309,6 +2846,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             if (!key) {
               throw failure(404, "NOT_FOUND", "The service API key was not found.");
             }
+            // Revocation requires the same authority as issuance.
+            await requireCoverage(key.servicePrincipalId);
             try {
               await options.auth.revokeServiceKey(key);
               await options.auditSink.append(audit(key));
@@ -3332,10 +2871,27 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           response: responses({
             type: "object",
             additionalProperties: false,
-            required: ["github", "google", "sessionBinding"],
+            required: ["github", "google", "oidc", "password", "sessionBinding"],
             properties: {
               github: { type: "boolean" },
               google: { type: "boolean" },
+              oidc: { type: "boolean" },
+              oidcSignIn: {
+                type: "object",
+                description:
+                  "Present only when OIDC sign-in is configured: the Console's button label and the configured authorization endpoint that the start URL must use.",
+                additionalProperties: false,
+                required: ["label", "authorizationUrl"],
+                properties: {
+                  label: { type: "string", minLength: 1, maxLength: 40 },
+                  authorizationUrl: { type: "string", format: "uri" },
+                },
+              },
+              password: {
+                type: "boolean",
+                description:
+                  "False when password sign-in is recovery-only: ordinary accounts sign in with an external provider, and only the recovery account uses a password.",
+              },
               sessionBinding: { type: "boolean" },
             },
           }),
@@ -3345,152 +2901,104 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         reply.header("cache-control", "no-store");
         const github = options.auth.githubEnabled === true;
         const google = options.auth.googleEnabled === true;
+        const oidc = options.auth.oidcEnabled === true;
+        const password = options.auth.passwordSignIn !== "recovery-only";
         return {
-          data: { github, google, sessionBinding: github || google },
+          data: {
+            github,
+            google,
+            oidc,
+            ...(oidc && options.auth.oidcSignIn !== undefined
+              ? { oidcSignIn: options.auth.oidcSignIn }
+              : {}),
+            password,
+            sessionBinding: github || google || oidc,
+          },
           meta: { requestId: request.id },
         };
       },
     );
-    routes.post(
-      "/api/auth/providers/github/start",
-      {
-        schema: {
-          operationId: "startGitHubSignIn",
-          summary: "Start GitHub sign-in for an enrolled account",
-          description:
-            "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
-          tags: ["Authentication"],
-          security: [],
-          response: {
-            ...responses({
+    // Handlers resolve on each request, as before: options.auth is read lazily.
+    const externalSignInProviders = [
+      { name: "github", label: "GitHub", article: "a", operation: "GitHub" },
+      { name: "google", label: "Google", article: "a", operation: "Google" },
+      { name: "oidc", label: "OIDC", article: "an", operation: "Oidc" },
+    ] as const;
+    for (const provider of externalSignInProviders) {
+      routes.post(
+        `/api/auth/providers/${provider.name}/start`,
+        {
+          schema: {
+            operationId: `start${provider.operation}SignIn`,
+            summary: `Start ${provider.label} sign-in for an enrolled account`,
+            description:
+              "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
+            tags: ["Authentication"],
+            security: [],
+            response: {
+              ...responses({
+                type: "object",
+                additionalProperties: false,
+                required: ["url", "attemptId"],
+                properties: {
+                  url: { type: "string", format: "uri" },
+                  attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
+                },
+              }),
+              403: { description: "Forbidden", ...error },
+            },
+          },
+        },
+        async (request, reply) => options.auth[`${provider.name}Start`](request, reply),
+      );
+      routes.get(
+        `/api/auth/providers/${provider.name}/callback`,
+        {
+          schema: {
+            operationId: `complete${provider.operation}SignIn`,
+            summary: `Complete an enrolled ${provider.label} sign-in`,
+            description:
+              "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
+            tags: ["Authentication"],
+            security: [],
+            response: { 302: { description: "Redirect to Console", type: "null" } },
+          },
+        },
+        async (request, reply) => options.auth[`${provider.name}Callback`](request, reply),
+      );
+      routes.post(
+        `/api/auth/providers/${provider.name}/result`,
+        {
+          schema: {
+            operationId: `confirm${provider.operation}SignIn`,
+            summary: `Confirm which session ${provider.article} ${provider.label} sign-in created`,
+            description:
+              "Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.",
+            tags: ["Authentication"],
+            security: [{ sessionCookie: [] }],
+            body: {
               type: "object",
               additionalProperties: false,
-              required: ["url", "attemptId"],
-              properties: {
-                url: { type: "string", format: "uri" },
-                attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
-              },
-            }),
-            403: { description: "Forbidden", ...error },
+              required: ["attemptId"],
+              properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
+            },
+            response: {
+              // A body without the exact attemptId fails the schema.
+              400: { description: "Bad Request", ...error },
+              ...responses({
+                type: "object",
+                additionalProperties: false,
+                required: ["sessionKey"],
+                properties: { sessionKey: { type: "string" } },
+              }),
+              403: { description: "Forbidden", ...error },
+              ...bodyErrors,
+            },
           },
         },
-      },
-      async (request, reply) => options.auth.githubStart(request, reply),
-    );
-    routes.get(
-      "/api/auth/providers/github/callback",
-      {
-        schema: {
-          operationId: "completeGitHubSignIn",
-          summary: "Complete an enrolled GitHub sign-in",
-          description:
-            "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
-          tags: ["Authentication"],
-          security: [],
-          response: { 302: { description: "Redirect to Console", type: "null" } },
-        },
-      },
-      async (request, reply) => options.auth.githubCallback(request, reply),
-    );
-    routes.post(
-      "/api/auth/providers/github/result",
-      {
-        schema: {
-          operationId: "confirmGitHubSignIn",
-          summary: "Confirm which session a GitHub sign-in created",
-          description:
-            "Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          body: {
-            type: "object",
-            additionalProperties: false,
-            required: ["attemptId"],
-            properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
-          },
-          response: {
-            ...responses({
-              type: "object",
-              additionalProperties: false,
-              required: ["sessionKey"],
-              properties: { sessionKey: { type: "string" } },
-            }),
-            403: { description: "Forbidden", ...error },
-          },
-        },
-      },
-      async (request, reply) => options.auth.githubResult(request, reply),
-    );
-    routes.post(
-      "/api/auth/providers/google/start",
-      {
-        schema: {
-          operationId: "startGoogleSignIn",
-          summary: "Start Google sign-in for an enrolled account",
-          description:
-            "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
-          tags: ["Authentication"],
-          security: [],
-          response: {
-            ...responses({
-              type: "object",
-              additionalProperties: false,
-              required: ["url", "attemptId"],
-              properties: {
-                url: { type: "string", format: "uri" },
-                attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
-              },
-            }),
-            403: { description: "Forbidden", ...error },
-          },
-        },
-      },
-      async (request, reply) => options.auth.googleStart(request, reply),
-    );
-    routes.get(
-      "/api/auth/providers/google/callback",
-      {
-        schema: {
-          operationId: "completeGoogleSignIn",
-          summary: "Complete an enrolled Google sign-in",
-          description:
-            "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
-          tags: ["Authentication"],
-          security: [],
-          response: { 302: { description: "Redirect to Console", type: "null" } },
-        },
-      },
-      async (request, reply) => options.auth.googleCallback(request, reply),
-    );
-    routes.post(
-      "/api/auth/providers/google/result",
-      {
-        schema: {
-          operationId: "confirmGoogleSignIn",
-          summary: "Confirm which session a Google sign-in created",
-          description:
-            "Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.",
-          tags: ["Authentication"],
-          security: [{ sessionCookie: [] }],
-          body: {
-            type: "object",
-            additionalProperties: false,
-            required: ["attemptId"],
-            properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
-          },
-          response: {
-            ...responses({
-              type: "object",
-              additionalProperties: false,
-              required: ["sessionKey"],
-              properties: { sessionKey: { type: "string" } },
-            }),
-            403: { description: "Forbidden", ...error },
-          },
-        },
-      },
-      async (request, reply) => options.auth.googleResult(request, reply),
-    );
+        async (request, reply) => options.auth[`${provider.name}Result`](request, reply),
+      );
+    }
 
     const accountParams = {
       type: "object",
@@ -3510,6 +3018,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       summary: "Inspect current human account state",
       schema: {},
     } as unknown as OccApiRoute;
+    // Account state and its controls live in the guarded external sign-in profile; the
+    // password-only profile has no account version, disabled state, or bound sessions.
+    function accountControlsUnsupported(): RequestFailure {
+      return failure(
+        409,
+        "RESOURCE_CONFLICT",
+        "Account controls require GitHub, Google or OIDC sign-in; the password-only profile does not support them.",
+      );
+    }
     async function humanAccountActor(
       request: FastifyRequest,
       operation: OccApiRoute,
@@ -3536,29 +3053,42 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       // A change to an account acts for its Principal (an attached identity signs in as it), so
       // the actor must already hold every grant of that Principal, as for service keys.
       if (targetUserId !== undefined) {
+        let principalId;
         let covered;
         try {
           const principal = await selected.lookupIdentity({
             issuer: options.auth.issuer,
             subject: targetUserId,
           });
+          principalId = principal?.kind === "principal" ? principal.id : undefined;
           // Without a Principal the account is not enrolled, and State refuses the change.
           covered =
-            principal?.kind !== "principal" ||
+            principalId === undefined ||
             (await selected.coversIdentityAccess({
               principalId: context.actorId,
-              targetIdentityId: principal.id,
+              targetIdentityId: principalId,
             })) === true;
         } catch {
           throw dependencyUnavailable();
         }
         if (!covered) {
-          await denial(operation, request, "authorization_denial", context, decision.evidence);
-          throw failure(
-            403,
-            "FORBIDDEN",
-            "The caller does not hold every grant of the target account's Principal.",
+          const decisionReason =
+            "The caller does not hold every grant of the target account's Principal.";
+          // The event's resource is the Installation, so name the account it targeted.
+          await denial(
+            operation,
+            request,
+            "authorization_denial",
+            context,
+            decision.evidence,
+            undefined,
+            {
+              decisionReason,
+              reasonCode: "ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED",
+              details: { userId: targetUserId, principalId },
+            },
           );
+          throw failure(403, "FORBIDDEN", decisionReason);
         }
       }
       return {
@@ -3608,6 +3138,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             }),
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
+            409: { description: "Conflict", ...error },
           },
         },
         onRequest: async (request) => admit(request, accountReadOperation),
@@ -3615,10 +3146,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => {
         const context = contexts.get(request);
-        if (!context || !options.auth.readAccount) {
+        if (!context) {
           throw dependencyUnavailable();
         }
         const actor = await humanAccountActor(request, accountReadOperation, context);
+        if (!options.auth.readAccount) {
+          throw accountControlsUnsupported();
+        }
         const { userId } = request.params as { userId: string };
         const account = await options.auth.readAccount(userId, actor);
         reply
@@ -3639,6 +3173,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         path: "/api/auth/accounts/:userId/providers/google",
         operationId: "attachGoogleIdentity",
         summary: "Attach an exact Google identity to an existing account",
+      },
+      {
+        operationName: "oidc",
+        path: "/api/auth/accounts/:userId/providers/oidc",
+        operationId: "attachOidcIdentity",
+        summary: "Attach an exact OIDC identity to an existing account",
       },
       {
         operationName: "disable",
@@ -3705,14 +3245,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               type: "object",
               additionalProperties: false,
               required:
-                operationName === "github" || operationName === "google"
+                operationName === "github" || operationName === "google" || operationName === "oidc"
                   ? ["subject", "expectedVersion"]
                   : ["expectedVersion"],
               properties: {
                 expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
                 ...(operationName === "github"
                   ? { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } }
-                  : operationName === "google"
+                  : operationName === "google" || operationName === "oidc"
                     ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
                     : {}),
               },
@@ -3724,9 +3264,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 required: ["userId"],
                 properties: { userId: { type: "string" } },
               }),
+              400: { description: "Bad Request", ...error },
               403: { description: "Forbidden", ...error },
               404: { description: "Not Found", ...error },
               409: { description: "Conflict", ...error },
+              ...bodyErrors,
             },
           },
           onRequest: async (request) => admit(request, operation),
@@ -3734,11 +3276,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         },
         async (request, reply) => {
           const context = contexts.get(request);
-          if (!context || !options.auth.readAccount || !options.auth.changeAccount) {
+          if (!context) {
             throw dependencyUnavailable();
           }
           const { userId } = request.params as { userId: string };
           const actor = await humanAccountActor(request, operation, context, userId);
+          if (!options.auth.readAccount || !options.auth.changeAccount) {
+            throw accountControlsUnsupported();
+          }
           const { expectedVersion } = request.body as { expectedVersion: number };
           if (operationName === "github") {
             if (!options.auth.attachGitHub || !options.auth.githubEnabled) {
@@ -3752,6 +3297,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             }
             const { subject } = request.body as { subject: string };
             await options.auth.attachGoogle(userId, subject, actor, expectedVersion);
+          } else if (operationName === "oidc") {
+            if (!options.auth.attachOidc || !options.auth.oidcEnabled) {
+              throw failure(409, "RESOURCE_CONFLICT", "OIDC sign-in is not configured.");
+            }
+            const { subject } = request.body as { subject: string };
+            await options.auth.attachOidc(userId, subject, actor, expectedVersion);
           } else if (operationName === "detach") {
             if (!options.auth.detachMethod) {
               throw dependencyUnavailable();
@@ -3805,6 +3356,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ...responses(recoveryResponse),
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
+            409: { description: "Conflict", ...error },
           },
         },
         onRequest: async (request) => admit(request, recoveryReadOperation),
@@ -3812,10 +3364,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => {
         const context = contexts.get(request);
-        if (!context || !options.auth.readRecovery) {
+        if (!context) {
           throw dependencyUnavailable();
         }
         const actor = await humanAccountActor(request, recoveryReadOperation, context);
+        if (!options.auth.readRecovery) {
+          throw accountControlsUnsupported();
+        }
         const recovery = await options.auth.readRecovery(actor);
         reply
           .header("cache-control", "no-store")
@@ -3864,9 +3419,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               required: [...recoveryResponse.required, "changed"],
               properties: { ...recoveryResponse.properties, changed: { type: "boolean" } },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
+            ...bodyErrors,
           },
         },
         onRequest: async (request) => admit(request, recoveryReplaceOperation),
@@ -3874,7 +3431,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => {
         const context = contexts.get(request);
-        if (!context || !options.auth.replaceRecovery) {
+        if (!context) {
           throw dependencyUnavailable();
         }
         const { userId, expectedCurrentUserId, expectedVersion } = request.body as {
@@ -3891,6 +3448,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           context,
           expectedCurrentUserId,
         );
+        if (!options.auth.replaceRecovery) {
+          throw accountControlsUnsupported();
+        }
         // The new holder must administer the Installation, as startup requires of the seed. This
         // check runs before the State transaction. That is sound because Installation-scoped access
         // bindings have no online revocation path (deleteAccessBinding is Namespace-scoped), and
@@ -3983,10 +3543,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => {
         const context = contexts.get(request);
-        if (!context || !options.auth.enrolAccount) {
+        if (!context) {
           throw dependencyUnavailable();
         }
         const actor = await humanAccountActor(request, enrolOperation, context);
+        if (!options.auth.enrolAccount) {
+          throw accountControlsUnsupported();
+        }
         const { userId } = request.params as { userId: string };
         const enrolled = await options.auth.enrolAccount(userId, actor);
         reply.send({ data: { userId, ...enrolled }, meta: { requestId: request.id } });
@@ -4000,7 +3563,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: "signInEmail",
           summary: "Sign in with email and password",
           description:
-            "Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are delayed and return 429 with Retry-After.",
+            "Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are limited and return 429; with GitHub, Google or OIDC sign-in, every attempt counts, successful ones included. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates.",
           tags: ["Authentication"],
           security: [],
           body: {
@@ -4013,6 +3576,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
           },
           response: {
+            // A browser Origin other than the console's, or a cross-site fetch, is refused
+            // before the credentials are read.
+            403: { description: "Forbidden", ...error },
             ...responses({
               type: "object",
               additionalProperties: false,
@@ -4022,7 +3588,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 sessionKey: { type: "string" },
               },
             }),
+            400: { description: "Bad Request", ...error },
             429: { description: "Too Many Requests", ...error },
+            ...bodyErrors,
           },
         },
       },
@@ -4037,7 +3605,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           description: "Revokes the current user session cookie.",
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
-          response: responses({ type: "object", additionalProperties: true }),
+          response: {
+            ...responses({ type: "object", additionalProperties: true }),
+            // A missing or foreign browser Origin, or a cross-site fetch.
+            403: { description: "Forbidden", ...error },
+          },
         },
       },
       async (request, reply) => options.auth.signOut(request, reply),
@@ -4105,6 +3677,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             409: { description: "Conflict", ...error },
+            ...bodyErrors,
           },
         },
         onRequest: async (request) => admit(request, createAuthAccountOperation),
@@ -4208,8 +3781,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                       "INVALID_REQUEST",
                       "The request does not match the operation contract.",
                     )
-                  : new DependencyUnavailableError(
-                      error instanceof Error ? error.message : "Auth account provisioning failed.",
+                  : Object.assign(
+                      new DependencyUnavailableError("Auth account provisioning failed."),
+                      // The API log names the cause's class and code, never its message.
+                      { cause: error },
                     );
         }
         const account = prepared;
@@ -4229,6 +3804,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   void app.register(async (routes) => {
     routes.addSchema(ErrorResponse);
     routes.addSchema(AgentDeploymentDiagnosticsResponse);
+    routes.addSchema(AgentRuntimeResponse);
+    routes.addSchema(AgentRuntimeLogsResponse);
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
@@ -4238,7 +3815,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       schema: nativeAdminStatusSchema,
       onRequest: async (request) => admit(request, nativeAdminStatusOperation),
       preHandler: async (request) => resolveIdentity(request, nativeAdminStatusOperation),
-      handler: getNativeAdminStatus,
+      handler: nativeAdmin.status,
     });
     for (const operation of occApiRoutes) {
       const permissions = requiredPermissions(operation);
@@ -4260,9 +3837,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
           : operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
             ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
-            : {}),
+            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
+              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
+              : {}),
         schema,
-        onRequest: async (request) => admit(request, operation),
+        onRequest: async (request) => {
+          await admit(request, operation);
+          if (authorizesBeforeBody(operation)) {
+            await resolveIdentity(request, operation);
+            await authorizeBeforeBody(request, operation);
+          }
+        },
         preValidation: async (request) => {
           const hasRequestBody =
             request.body !== undefined ||
@@ -4272,11 +3857,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw failure(
               400,
               "INVALID_REQUEST",
-              "The request does not match the operation contract.",
+              "The request does not match the operation contract: this operation accepts no request body.",
             );
           }
+          const unstorable =
+            unstorableTextFailure("params", request.params) ??
+            unstorableTextFailure("body", request.body);
+          if (unstorable !== undefined) {
+            throw unstorable;
+          }
         },
-        preHandler: async (request) => resolveIdentity(request, operation),
+        ...(authorizesBeforeBody(operation)
+          ? {}
+          : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
         handler: async (request, reply) => perform(request, reply, operation),
       });
     }
@@ -4292,284 +3885,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     url: "/console/*",
     handler: async (request, reply) => serveConsole(request, reply),
   });
-
-  app.server.on("upgrade", (request, socket, head) => {
-    void handleNativeAdminUpgrade(request, socket as Socket, head);
-  });
-
-  app.addHook("preClose", async () => {
-    nativeAdminShuttingDown = true;
-    await Promise.all(
-      [...nativeAdminSockets].map(
-        (socket) =>
-          new Promise<void>((resolve) => {
-            socket.once("close", () => resolve());
-            socket.destroy();
-          }),
-      ),
-    );
-    nativeAdminSockets.clear();
-    await drainNativeAdminCloseAudits();
-  });
-
-  async function resolveNativeAdminActor(input: {
-    readonly actorIssuer: string;
-    readonly actorSubject: string;
-  }): Promise<string | undefined> {
-    try {
-      const identity = await selectedIAMDriver().lookupIdentity({
-        issuer: input.actorIssuer,
-        subject: input.actorSubject,
-      });
-      if (
-        identity?.kind !== "principal" ||
-        identity.issuer !== input.actorIssuer ||
-        identity.subject !== input.actorSubject
-      ) {
-        return undefined;
-      }
-      return identity.id;
-    } catch {
-      return undefined;
-    }
-  }
-
-  function nativeAdminProxyDenial(
-    reason: NativeAdminWebSocketCloseReason,
-    input: Omit<NativeAdminProxyDenial, "denied" | "reason"> = {},
-  ): NativeAdminProxyDenial {
-    return { denied: true, reason, ...input };
-  }
-
-  function isNativeAdminProxyResolution(
-    admission: NativeAdminProxyAdmission | undefined,
-  ): admission is NativeAdminProxyResolution {
-    return admission !== undefined && !("denied" in admission);
-  }
-
-  function nativeAdminFailureReason(error: unknown): NativeAdminWebSocketCloseReason {
-    const mapped = requestFailure(error);
-    if (mapped.code === "RESOURCE_CONFLICT") {
-      return "revision_changed";
-    }
-    if (mapped.code === "DEPENDENCY_UNAVAILABLE") {
-      return "agent_unavailable";
-    }
-    if (mapped.code === "FORBIDDEN") {
-      return options.nativeAdmin?.enabled === true ? "authorization_denied" : "disabled";
-    }
-    return "dependency_failure";
-  }
-
-  async function nativeAdminProxyContext(
-    request: IncomingMessage,
-    hostname: string,
-    expectedRevisionId?: string,
-  ): Promise<NativeAdminProxyAdmission> {
-    let admitted: AdmittedCaller;
-    try {
-      admitted = await options.auth.admissionVerifier.verify({
-        requestId: `nar_${randomUUID()}`,
-        method: request.method ?? "GET",
-        routeId: "nativeAdminProxy",
-        requestedScope: { installationId },
-        transport: {
-          remoteAddress: request.socket.remoteAddress ?? "127.0.0.1",
-          ...(request.socket.localAddress === undefined
-            ? {}
-            : { localAddress: request.socket.localAddress }),
-          trustProxy: false,
-        },
-        ...(typeof request.headers.authorization === "string"
-          ? { authorizationHeader: request.headers.authorization }
-          : {}),
-        headers: request.headers,
-      });
-    } catch {
-      return nativeAdminProxyDenial("session_invalid");
-    }
-    if (
-      admitted.method !== "session" ||
-      admitted.admittedScope.installationId !== installationId ||
-      !isNonEmptyString(admitted.externalIdentity.issuer) ||
-      !isNonEmptyString(admitted.externalIdentity.subject)
-    ) {
-      return nativeAdminProxyDenial("session_invalid");
-    }
-    const session = admitted.session;
-    if (
-      session.userId !== admitted.externalIdentity.subject ||
-      Date.parse(session.expiresAt) <= Date.now()
-    ) {
-      return nativeAdminProxyDenial("session_invalid");
-    }
-    const actorIssuer = admitted.externalIdentity.issuer;
-    const actorSubject = admitted.externalIdentity.subject;
-    const currentActor = await resolveNativeAdminActor({ actorIssuer, actorSubject });
-    if (currentActor === undefined) {
-      return nativeAdminProxyDenial("authorization_denied");
-    }
-    const agent = await resolveNativeAdminAgentHost(hostname);
-    if (agent === undefined) {
-      return nativeAdminProxyDenial("authorization_denied");
-    }
-    try {
-      const resolved = await requireAvailableNativeAdminTarget({
-        actorId: currentActor,
-        namespaceId: agent.namespaceId,
-        agentId: agent.id,
-        expectedHost: hostname,
-        ...(expectedRevisionId === undefined ? {} : { expectedRevisionId }),
-      });
-      const requestAuthority = nativeAdminAuthority(request.headers.host);
-      if (requestAuthority !== new URL(resolved.target.origin).host.toLowerCase()) {
-        return nativeAdminProxyDenial("session_invalid");
-      }
-      return {
-        parentSessionId: session.id,
-        actorId: currentActor,
-        actorIssuer,
-        actorSubject,
-        namespaceId: resolved.agent.namespaceId,
-        agentId: resolved.agent.id,
-        revisionId: resolved.revision.id,
-        target: resolved.target,
-        gatewayBase: resolved.gatewayBase,
-      };
-    } catch (error) {
-      if (isAuthorizationDenied(error)) {
-        return nativeAdminProxyDenial("authorization_denied", {
-          actorId: currentActor,
-          actorIssuer,
-          actorSubject,
-          namespaceId: agent.namespaceId,
-          agentId: agent.id,
-          ...(expectedRevisionId === undefined ? {} : { revisionId: expectedRevisionId }),
-          host: hostname,
-          actualAuthorizationDenied: true,
-          ...(error.evidence === undefined ? {} : { evidence: error.evidence }),
-          ...(error.authorization === undefined ? {} : { authorization: error.authorization }),
-        });
-      }
-      return nativeAdminProxyDenial(nativeAdminFailureReason(error));
-    }
-  }
-
-  async function interceptNativeAdminHttp(
-    request: FastifyRequest,
-    reply: FastifyReply,
-  ): Promise<boolean> {
-    const hostname = nativeAdminHostname(request.headers.host);
-    if (!isNativeAdminDomainHost(hostname)) {
-      return false;
-    }
-    if (isNativeAdminReservedPrefix(request.url) || !isNativeAdminAgentHost(hostname)) {
-      canonicalFailure(
-        reply,
-        failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
-      );
-      return true;
-    }
-    const admission = await boundedNativeAdminAdmission(
-      nativeAdminProxyContext(request.raw, hostname),
-    );
-    if (!isNativeAdminProxyResolution(admission)) {
-      try {
-        await appendNativeAdminProxyDenialAudit(admission);
-      } catch {
-        canonicalFailure(reply, dependencyUnavailable());
-        return true;
-      }
-      canonicalFailure(
-        reply,
-        admission === undefined
-          ? dependencyUnavailable()
-          : failure(403, "FORBIDDEN", "The exact platform operation was not authorized."),
-      );
-      return true;
-    }
-    const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
-    if (context === undefined) {
-      canonicalFailure(reply, dependencyUnavailable());
-      return true;
-    }
-    await streamNativeAdminHttp({ request, reply, context });
-    return true;
-  }
-
-  async function handleNativeAdminUpgrade(
-    request: IncomingMessage,
-    socket: Socket,
-    head: Buffer,
-  ): Promise<void> {
-    const hostname = nativeAdminHostname(request.headers.host);
-    if (!isNativeAdminAgentHost(hostname) || isNativeAdminReservedPrefix(request.url)) {
-      socket.destroy();
-      return;
-    }
-    nativeAdminSockets.add(socket);
-    socket.once("close", () => nativeAdminSockets.delete(socket));
-    const admission = await boundedNativeAdminAdmission(nativeAdminProxyContext(request, hostname));
-    if (!isNativeAdminProxyResolution(admission)) {
-      try {
-        await appendNativeAdminProxyDenialAudit(admission);
-      } catch {
-        app.log.warn({ event: "native_admin.websocket_denial_audit_failed" });
-      }
-      socket.destroy();
-      return;
-    }
-    const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
-    if (context === undefined) {
-      socket.destroy();
-      return;
-    }
-    const connectionId = `naws_${randomUUID()}`;
-    proxyNativeAdminWebSocket({
-      request,
-      socket,
-      head,
-      context,
-      connectionId,
-      lease: async () => {
-        const renewed = await boundedNativeAdminAdmission(
-          nativeAdminProxyContext(request, hostname, admission.revisionId),
-        );
-        if (renewed === undefined) {
-          return "dependency_timeout";
-        }
-        if (!isNativeAdminProxyResolution(renewed)) {
-          try {
-            await appendNativeAdminProxyDenialAudit(renewed);
-          } catch {
-            return "dependency_failure";
-          }
-          return renewed.reason;
-        }
-        return undefined;
-      },
-      onConnect: async () => {
-        await appendNativeAdminSocketAudit("connect", admission, { connectionId });
-      },
-      onClose: (cause: NativeAdminWebSocketCloseCause) => {
-        const closeReason = nativeAdminShuttingDown ? "shutdown" : cause.reason;
-        const closeAudit = appendNativeAdminSocketAudit("close", admission, {
-          connectionId: cause.connectionId,
-          closeReason,
-        }).catch((error) => {
-          app.log.warn({
-            event: "native_admin.websocket_audit_failed",
-            error,
-            namespaceId: admission.namespaceId,
-            agentId: admission.agentId,
-            revisionId: admission.revisionId,
-          });
-        });
-        nativeAdminCloseAudits.add(closeAudit);
-        closeAudit.finally(() => nativeAdminCloseAudits.delete(closeAudit));
-      },
-    });
-  }
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";
@@ -4605,22 +3920,113 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   app.setErrorHandler(async (error, request, reply) => {
     let mapped = requestFailure(error);
+    if (error instanceof RuntimeLogsError && error.retryAfterSeconds !== undefined) {
+      reply.header("retry-after", String(error.retryAfterSeconds));
+    }
     if (isAuthorizationDenied(error) && !isDependencyUnavailable(error)) {
       const context = contexts.get(request);
       if (context) {
         try {
-          await denial(
-            context.operation,
-            request,
-            "authorization_denial",
-            context,
-            error.evidence,
-            error.authorization,
-          );
+          if (error instanceof AgentPrincipalAuthorizationError) {
+            // The caller's own grants passed; the Agent's service principal was denied. Record
+            // the caller's request and name that principal, its grant and its evidence, so the
+            // event never reads as the caller lacking the grant.
+            await denial(
+              context.operation,
+              request,
+              "authorization_denial",
+              context,
+              undefined,
+              undefined,
+              {
+                decisionReason: error.message,
+                reasonCode: "AGENT_PRINCIPAL_NOT_AUTHORIZED",
+                details: {
+                  servicePrincipalId: error.principalId,
+                  action: error.authorization.action,
+                  resource: error.authorization.resource,
+                  ...(error.evidence === undefined
+                    ? {}
+                    : { servicePrincipalEvidence: error.evidence }),
+                },
+              },
+            );
+          } else {
+            await denial(
+              context.operation,
+              request,
+              "authorization_denial",
+              context,
+              error.evidence,
+              error.authorization,
+              error instanceof DeletionRetryOwnedError
+                ? {
+                    decisionReason:
+                      "A deletion can be retried only by its initiating actor while it holds delete.",
+                    details: { initiatingActorId: error.initiatingActorId },
+                  }
+                : undefined,
+            );
+          }
         } catch (auditError) {
           mapped = requestFailure(auditError);
         }
       }
+    }
+    if (error instanceof RuntimeCredentialsForbiddenByClusterError) {
+      // The response names the RoleBinding; the log names the exact denied call.
+      app.log.warn({
+        event: "agent_runtime_credentials.cluster_denied",
+        requestId: request.id,
+        route: request.routeOptions.url ?? "unmatched",
+        verb: error.verb,
+        resource: error.resource,
+        kubernetesNamespace: error.kubernetesNamespace,
+        plane: error.plane,
+        kubernetesStatus: error.status,
+      });
+    }
+    if (error instanceof ComputeProvisioningRefusedError) {
+      // The response keeps fixed text, because the Compute Driver's reason can name
+      // Installation gateway or routing settings; the operator finds it here by request ID.
+      app.log.warn({
+        event: "agent_provisioning.compute_refused",
+        requestId: request.id,
+        route: request.routeOptions.url ?? "unmatched",
+        reason: error.reason,
+      });
+    }
+    if (error instanceof DeviceAuthorizationStartError) {
+      app.log.warn({
+        event: "device_authorization.start_failed",
+        requestId: request.id,
+        route: request.routeOptions.url ?? "unmatched",
+        host: "auth.openai.com",
+        reason: error.reason,
+        failure: error.failure,
+      });
+    }
+    if (
+      mapped.status === 503 &&
+      mapped.code === "DEPENDENCY_UNAVAILABLE" &&
+      error instanceof Error &&
+      isDependencyUnavailable(error)
+    ) {
+      // The response keeps its text (the caller learns nothing more); the operator finds the
+      // cause here by request ID. Reading the error must never change the response.
+      let fields: ReturnType<typeof dependencyUnavailableLogFields> = {};
+      try {
+        fields = dependencyUnavailableLogFields(error);
+      } catch {
+        // An error whose fields cannot be read is logged without them.
+      }
+      app.log.warn({
+        event: "http.dependency_unavailable",
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions.url ?? "unmatched",
+        ...fields,
+      });
     }
     if (mapped.code === "INTERNAL_ERROR") {
       app.log.error({
@@ -4673,5 +4079,3 @@ export function createControllerApp(options: ControllerAppOptions): ControllerAp
     },
   };
 }
-
-export const createOccApi = createControllerApp;

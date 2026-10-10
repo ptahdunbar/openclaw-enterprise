@@ -8,11 +8,10 @@ OpenShell keeps its own copy of the key and substitutes it on requests to
 [credential source reference](../../reference/credential-sources.md) defines the
 API behavior.
 
-Stock OpenShell `v0.1.0` still rejects the Agent's app-server token projection,
-so the deployment in this profile fails closed before a Sandbox starts. The
-procedure proves registration, authorization, and admission. For a real model
-turn with the injected key, run the
-[OpenShell compatibility proof](../../testing/openshell.md#openshell-sandbox).
+The profile installs private Gateway routing, so the deployment provisions an
+OpenShell Sandbox for the dedicated Codex Harness. To run these steps and verify
+a real model turn with the injected key in one command, use
+[Deploy your first Agent](../first-agent.md) with `--harness codex`.
 
 ## Before you start
 
@@ -122,6 +121,16 @@ JSON
 CONFIGURATION_ID="$(./bin/occ configuration create --file configuration.json -o json | jq -r .id)"
 ```
 
+The Configuration keeps `"sandbox": "read-only"`, but each deployed revision
+freezes `"sandbox": "danger-full-access"` and `"approvalsReviewer": "user"`. The
+OpenShell Sandbox Driver overrides these values for every dedicated Codex
+revision so that Codex's own sandbox does not run inside OpenShell's; OpenShell
+is the containment boundary. Codex's sandbox cannot start there, so keep
+`tools.exec` at its default or `mode: full`: other modes, including those the
+legacy `security` and `ask` fields select, make every shell command fail.
+`approvalPolicy` stays as configured.
+See [OpenShell Sandbox configuration](../../reference/drivers/openshell-sandbox.md#configuration).
+
 Create the Agent with the source as its Harness authentication:
 
 ```bash
@@ -154,21 +163,46 @@ DEPLOYMENT_ID="$(./bin/occ agent deploy "$AGENT_ID" -o json | jq -r .id)"
 ```
 
 Expected result: OCC accepts the deployment and freezes
-`{"method": "credential_source", "sourceId": "cs_…"}` in the revision. The
-status then reaches `failed` with `DEPENDENCY_UNAVAILABLE`, because stock
-OpenShell cannot project the app-server token. No Sandbox is created, and the
-Agent's `oce-*` Harness namespace contains no Secret. Without the access
-binding, the deploy request fails with `403`.
+`{"method": "credential_source", "sourceId": "cs_…"}` in the revision. Compute
+starts the Agent Gateway, then OpenShell creates the Sandbox, and the revision
+becomes active once the Harness workspace node connects to the Gateway. Startup
+can take several minutes. Without the access binding, the deploy request fails
+with `403`.
+
+## Rotate the key
+
+Changing the Secret does not change the gateway's copy. Update the Secret, or
+create a replacement, and then push it to the gateway:
+
+```bash
+./bin/occ credential-source update "$SOURCE_ID"
+```
+
+For a replacement Secret, add `--file` with
+`{"secrets": {"api_key": <replacement ref>}}`. Running Agents keep the old value
+until they are redeployed. The
+[update reference](../../reference/credential-sources.md#update-a-source) lists the
+required permissions and failure cases.
 
 ## Clean up
 
-A source cannot be deleted while an Agent references it. Delete the Agent first,
-wait until `agent get` returns `404`, then delete the source and its Secret:
+A source cannot be deleted while an Agent references it. Record the source's
+current Secret, delete the Agent, and wait until `agent get` returns `404`:
 
 ```bash
+SECRET_ID="$(./bin/occ credential-source get "$SOURCE_ID" -o json | jq -r .secrets.api_key.id)"
 ./bin/occ agent delete "$AGENT_ID"
+./bin/occ agent get "$AGENT_ID"
+```
+
+Then delete the source, its Secret, the Configuration, and the Role:
+
+```bash
 ./bin/occ credential-source delete "$SOURCE_ID"
-./bin/occ secret delete "$(jq -r .secrets.api_key.id credential-source.json)"
+./bin/occ secret delete "$SECRET_ID"
+./bin/occ configuration delete "$CONFIGURATION_ID"
+./bin/occ iam role delete "$ROLE_ID"
+rm -f credential-source.json configuration.json agent.json agent-response.json role.json binding.json
 ```
 
 Deleting the source also removes the gateway's copy. Within about a minute of
@@ -191,4 +225,10 @@ the profile instead.
   method. With a Credential Gateway selected, only `credential_source` is
   accepted.
 - **`credential-source delete` returns `409`:** an Agent draft, active
-  revision, or pending deployment still references the source.
+  revision, or pending deployment still references the source. With
+  `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`, only withdrawal work still retrying for
+  an earlier revision that held the source blocks it: wait up to about an hour,
+  or delete the Agent.
+- **`iam role delete` returns `409`:** an access binding still uses the Role.
+  Deleting the source removes its bindings; otherwise find the binding with
+  `./bin/occ iam access-binding list` and delete it first.

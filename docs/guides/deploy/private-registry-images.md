@@ -2,7 +2,7 @@
 
 Select a controller, runtime, and Helm chart from a verified source revision,
 then make the images available to every eligible Kubernetes node. This guide
-copies an already published image pair from private GHCR to private Amazon
+copies an already published image pair from public GHCR to private Amazon
 Elastic Container Registry (ECR) without rebuilding it. Use the
 [production installation guide](production-installation.md) to configure and
 install the resulting references. Operators can instead build their own images
@@ -37,13 +37,12 @@ is a separate process and is not assumed to have occurred for an image release.
 
 ## Copy the verified images to ECR
 
-The operator needs Skopeo, AWS CLI, access to both private GHCR packages, ECR
-push and read access, existing ECR repositories, and network access to both
-registries. GHCR requires a GitHub personal access token (classic) with
-`read:packages` and any required organization SSO authorization. Verify that
-both ECR repositories enforce immutable tags, with no exclusions for the chosen
-tags, and restrict other writers. Choose a unique tag for this publication;
-never replace an existing tag. See [ECR tag immutability](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-tag-mutability.html).
+The operator needs Skopeo, AWS CLI, ECR push and read access, existing ECR
+repositories, and network access to both registries. GHCR source pulls are
+public. Verify that both ECR repositories enforce immutable tags, with no
+exclusions for the chosen tags, and restrict other writers. Choose a unique tag
+for this publication; never replace an existing tag. See
+[ECR tag immutability](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-tag-mutability.html).
 The ECR account and Region must be the ones approved for the cluster.
 
 Set the values from the publication record and the target registry. The source
@@ -69,7 +68,7 @@ bash
 ```
 
 In that shell, create the private auth file, register cleanup immediately, and
-authenticate. If an operation fails unexpectedly, exit this shell before
+authenticate to ECR. If an operation fails unexpectedly, exit this shell before
 investigating or retrying; start a fresh one and authenticate again. The tag
 lookup below can return the expected `ImageNotFoundException`.
 
@@ -81,16 +80,14 @@ trap 'rm -f -- "$REGISTRY_AUTH"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 printf '{"auths":{}}\n' > "$REGISTRY_AUTH"
-skopeo login --authfile "$REGISTRY_AUTH" --username '<github-username>' ghcr.io
 aws ecr get-login-password --region "$AWS_REGION" | \
   skopeo login --authfile "$REGISTRY_AUTH" --username AWS --password-stdin "$ECR_REGISTRY"
 ```
 
-Enter the GitHub token at the prompt. Run `aws sts get-caller-identity` and
-confirm the selected account before writing to ECR. The temporary auth file
-contains registry credentials. The ECR login expires; renew it before retrying
-if necessary. Before copying, inspect each target tag
-using `aws ecr describe-images` in the approved account and Region. An
+Run `aws sts get-caller-identity` and confirm the selected account before writing
+to ECR. The temporary auth file contains registry credentials. The ECR login
+expires; renew it before retrying if necessary. Before copying, inspect each
+target tag using `aws ecr describe-images` in the approved account and Region. An
 `ImageNotFoundException` establishes that the tag is absent; permission,
 network, and other errors do not. For each repository, read its policy and the
 exact target tag, substituting the repository name:
@@ -146,16 +143,25 @@ export CONTROLLER_IMAGE="$ECR_CONTROLLER@sha256:<verified-controller-digest>"
 export RUNTIME_IMAGE="$ECR_RUNTIME@sha256:<verified-runtime-digest>"
 ```
 
-Configure node pull permissions separately. EKS managed nodes use their node
+## Configure node pull access
+
+Configure node pull permissions separately. OCE adds no `imagePullSecrets` to the Pods
+it creates, so every node that runs control-plane or Agent Pods needs its own pull
+access. Don't pull an OCE image through a Pod's `imagePullSecrets` either: where
+kubelet verifies pull credentials (`KubeletEnsureSecretPulledImages`), every later Pod
+on that node that uses the image without that Secret, such as a restarted API or
+worker or the initialization Job, must then pull it again, which fails without node
+access.
+
+EKS managed nodes use their node
 IAM role for ECR pulls; cross-account repository policies may also be needed.
 For nodes without internet egress, configure ECR API and registry endpoints,
 S3 layer access, DNS, routes, security groups, and endpoint policies as described
 in [ECR VPC endpoints](https://docs.aws.amazon.com/AmazonECR/latest/userguide/vpc-endpoints.html)
 and [ECR images on EKS](https://docs.aws.amazon.com/AmazonECR/latest/userguide/ECR_on_EKS.html).
 Builder credentials do not grant node access. Confirm actual pulls on both
-control-plane and Agent nodes for the intended architectures. For direct GHCR
-pulls, provision and maintain approved private-registry credentials in every
-namespace or node that needs them; a workstation login is insufficient.
+control-plane and Agent nodes for the intended architectures. Direct public GHCR
+pulls need internet egress to GHCR and its layer hosts, not pull credentials.
 
 Continue at [Configure the Installation](production-installation.md#configure-the-installation)
 with the two ECR digest references. Use the same runtime digest for gateway and

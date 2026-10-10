@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   bootstrapProductionInstallation,
@@ -8,11 +7,14 @@ import {
   consoleOrigin as origin,
   currentSession,
   defaultInstallSettings,
+  installationRoles,
   passwordSignIn,
+  postgresSignInState,
+  signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "password-default-admin@example.test";
 const memberEmail = "password-default-member@example.test";
 const memberPassword = "password-default-member-password";
@@ -23,14 +25,10 @@ const authSecret = "password-default-auth-test-secret-at-least-32-bytes";
 // settings, with no OCC_AUTH_GITHUB_* or trusted-proxy names. No provider is reachable.
 test(
   "a password-only install without GitHub onboards, signs in and out, and refuses GitHub routes",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool } = postgresSignInState(t, () => [app]);
     const adminPassword = await bootstrapProductionInstallation(t, {
       databaseUrl,
       email: adminEmail,
@@ -48,12 +46,16 @@ test(
     assert.deepEqual(providers.json().data, {
       github: false,
       google: false,
+      oidc: false,
+      password: true,
       sessionBinding: false,
     });
 
     const signIn = (email, password, remoteAddress) =>
       passwordSignIn(app, origin, { email, password }, remoteAddress);
     const sessionOf = (cookie) => currentSession(app, cookie);
+    const adminHeaders = () =>
+      signedInHeaders(app, origin, { email: adminEmail, password: adminPassword });
 
     await t.test("the bootstrap administrator signs in with the generated password", async () => {
       const response = await signIn(adminEmail, adminPassword);
@@ -65,17 +67,8 @@ test(
 
     let member;
     await t.test("the administrator creates a password account with the exact Origin", async () => {
-      const admin = await signIn(adminEmail, adminPassword);
-      const headers = { cookie: cookieHeaderFromSetCookie(admin.headers["set-cookie"]), origin };
-      const installation = await new PostgresPlatformState(pool).loadInstallation();
-      const policy = await new PostgresPlatformState(pool).loadNativeIAMState(installation.id);
-      const role = policy.roles.find((candidate) =>
-        candidate.permissions.some(
-          (permission) =>
-            permission.action === "read" && permission.resourceKind === "installation",
-        ),
-      );
-      assert.ok(role);
+      const headers = await adminHeaders();
+      const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
       const payload = { email: memberEmail, password: memberPassword, roleId: role.id };
       for (const refused of [
         { cookie: headers.cookie },
@@ -132,6 +125,98 @@ test(
       assert.equal(await sessionOf(cookie), null);
     });
 
+    await t.test("password sign-ins are audited, and a failure names no account", async (t) => {
+      // The audit record replaces the library's unstructured console warning.
+      const warn = t.mock.method(console, "warn", () => {});
+      const state = new PostgresPlatformState(pool);
+      const logins = async () =>
+        (await state.transact((unit) => unit.audit.list())).filter(
+          ({ action }) => action === "authentication.login",
+        );
+      const before = (await logins()).length;
+      const accepted = await signIn(memberEmail, memberPassword);
+      assert.equal(accepted.statusCode, 200, accepted.body);
+      const refused = await signIn(memberEmail, "wrong-member-password");
+      assert.equal(refused.statusCode, 401, refused.body);
+      const unknown = await signIn("nobody@example.test", "wrong-member-password");
+      assert.equal(unknown.statusCode, 401, unknown.body);
+      const recorded = (await logins()).slice(before);
+      const installation = await state.loadInstallation();
+      const principal = (await state.loadNativeIAMState(installation.id)).identities.find(
+        (identity) => identity.kind === "principal" && identity.subject === member.id,
+      );
+      assert.ok(principal);
+      assert.deepEqual(
+        recorded.map(({ kind, actorId, outcome, reasonCode, details }) => ({
+          kind,
+          actorId,
+          outcome,
+          reasonCode,
+          details,
+        })),
+        [
+          {
+            kind: "mutation",
+            actorId: principal.id,
+            outcome: "success",
+            reasonCode: undefined,
+            details: { userId: member.id },
+          },
+          ...Array(2).fill({
+            kind: "authorization_denial",
+            actorId: "unresolved",
+            outcome: "denied",
+            reasonCode: "INVALID_CREDENTIALS",
+            details: undefined,
+          }),
+        ],
+      );
+      // Neither the attempted email nor the password reaches the audit record.
+      const stored = JSON.stringify(recorded);
+      assert.ok(!stored.includes("nobody@example.test"));
+      assert.ok(!stored.includes("wrong-member-password"));
+      assert.deepEqual(
+        warn.mock.calls.filter(({ arguments: [message] }) =>
+          String(message).includes("[Better Auth]"),
+        ),
+        [],
+      );
+    });
+
+    await t.test(
+      "account controls refuse with a specific conflict, not a dependency failure",
+      async () => {
+        const headers = await adminHeaders();
+        const memberSession = cookieHeaderFromSetCookie(
+          (await signIn(memberEmail, memberPassword)).headers["set-cookie"],
+        );
+        const requests = [
+          { method: "GET", url: `/api/auth/accounts/${member.id}` },
+          ...["disable", "enable", "revoke"].map((operation) => ({
+            method: "POST",
+            url: `/api/auth/accounts/${member.id}/${operation}`,
+            payload: { expectedVersion: 1 },
+          })),
+          { method: "POST", url: `/api/auth/accounts/${member.id}/enrol` },
+          { method: "GET", url: "/api/auth/recovery" },
+          {
+            method: "POST",
+            url: "/api/auth/recovery",
+            payload: { userId: member.id, expectedCurrentUserId: member.id, expectedVersion: 1 },
+          },
+        ];
+        for (const request of requests) {
+          const response = await app.inject({ ...request, headers });
+          assert.equal(response.statusCode, 409, `${request.url}: ${response.body}`);
+          assert.equal(response.json().error.code, "RESOURCE_CONFLICT");
+          assert.match(response.json().error.message, /password-only/);
+          const untrusted = await app.inject({ ...request, headers: { cookie: headers.cookie } });
+          assert.equal(untrusted.statusCode, 403, "the Origin check still precedes the profile");
+        }
+        assert.equal((await sessionOf(memberSession)).user.id, member.id, "nothing was revoked");
+      },
+    );
+
     await t.test("GitHub and Google routes refuse without contacting a provider", async () => {
       let providerCalls = 0;
       const originalFetch = globalThis.fetch;
@@ -139,8 +224,7 @@ test(
         providerCalls += 1;
         return originalFetch(input, init);
       });
-      const admin = await signIn(adminEmail, adminPassword);
-      const cookie = cookieHeaderFromSetCookie(admin.headers["set-cookie"]);
+      const { cookie } = await adminHeaders();
       for (const provider of ["github", "google"]) {
         const start = await app.inject({
           method: "POST",

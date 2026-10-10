@@ -3,16 +3,12 @@
 [`container-promote.yml`](workflows/container-promote.yml) copies the exact
 controller and runtime digests already published by
 [Enterprise Containers](containers.md). It never builds images, creates a
-repository, changes visibility, or falls back to a public destination.
+repository, changes visibility, or falls back to an alternate destination.
 
-Promotion still requires the private Enterprise source repository and private
-linked GHCR packages. Public-source support is limited to no-push preparation in
-Enterprise Containers; it does not enable promotion, even with `PUBLISH=false`.
-Public-source publication and promotion remain blocked pending an explicitly
-reviewed package-access and credential design. Before changing repository
-visibility, review existing grants, inherited access, credentials, and artifact
-audiences as described in [Source visibility](containers.md#source-visibility);
-these guards do not revoke existing access.
+Promotion requires an ordinary successful publication from the public Enterprise
+source repository to public GHCR packages. The Docker Hub destinations remain
+private and separately authorized. No-push preparation with `PUBLISH=false` does
+not create a promotion source.
 
 ## Operator setup
 

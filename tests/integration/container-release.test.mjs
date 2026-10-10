@@ -5,12 +5,14 @@ import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   ghcrPackageName,
   github,
   readArchivePlatforms,
   repository,
   publishWorkflow,
+  runtimeImageSmokeTests,
   validateCi,
   validateContext,
   validateEnvironment,
@@ -19,6 +21,7 @@ import {
   verifyGhcr,
 } from "../../scripts/ci/container-release.mjs";
 import { pushChart, writeBootstrapChart } from "../../scripts/ci/chart-package.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import {
   chartArchiveContent,
   stageReleaseChart,
@@ -36,7 +39,10 @@ const env = {
   GITHUB_SHA: sourceSha,
   SOURCE_SHA: sourceSha,
 };
-const repo = { full_name: repository, private: true, default_branch: "main" };
+const repo = { full_name: repository, private: false, default_branch: "main" };
+// Package rejections shared by the GHCR verification and package validation tests.
+const publicOnly = { message: /^GHCR package must already exist and be public\./ };
+const linkFirst = { message: /^Link the package to Enterprise first\./ };
 
 const releaseImages = ["controller", "runtime"].map((image) => ({
   image,
@@ -65,15 +71,35 @@ test("chart release binds one exact image publication to the OCE version", () =>
     validateImageReceipt(releaseImages, expected).map(({ image }) => image),
     ["controller", "runtime"],
   );
-  for (const changed of [
-    [releaseImages[0]],
-    [releaseImages[0], releaseImages[0]],
-    [{ ...releaseImages[0], sourceSha: "b".repeat(40) }, releaseImages[1]],
-    [releaseImages[0], { ...releaseImages[1], digest: "latest" }],
-    [releaseImages[0], { ...releaseImages[1], runId: "999" }],
+  // Each rejection names the guard that must refuse it, so removing any one guard fails.
+  const runtime = (patch) => [releaseImages[0], { ...releaseImages[1], ...patch }];
+  for (const [changed, guard] of [
+    [[releaseImages[0]], { message: /^Expected two published images\./ }],
+    [
+      [releaseImages[0], releaseImages[0]],
+      { message: /^Expected controller and runtime images once each\./ },
+    ],
+    [runtime({ sourceSha: "b".repeat(40) }), { actual: "b".repeat(40), expected: sourceSha }],
+    [runtime({ workflowSha: "b".repeat(40) }), { actual: "b".repeat(40), expected: sourceSha }],
+    [runtime({ runId: "999" }), { actual: "999", expected: "123" }],
+    [runtime({ attempt: "2" }), { actual: "2", expected: "1" }],
+    [runtime({ ciRunId: "789" }), { actual: "789", expected: "456" }],
+    [runtime({ ciAttempt: "2" }), { actual: "2", expected: "1" }],
+    [runtime({ destination: "ghcr.io/openclaw/other" }), { actual: "ghcr.io/openclaw/other" }],
+    [runtime({ tag: "latest" }), { actual: "latest", expected: `sha-${sourceSha}` }],
+    [runtime({ digest: "latest" }), { operator: "match", actual: "latest" }],
   ]) {
-    assert.throws(() => validateImageReceipt(changed, expected));
+    assert.throws(() => validateImageReceipt(changed, expected), guard);
   }
+  assert.throws(() => validateImageReceipt(releaseImages, { ...expected, sourceSha: "main" }), {
+    operator: "match",
+    actual: "main",
+  });
+  const shared = { ...expected, runtimeImage: expected.controllerImage };
+  assert.throws(
+    () => validateImageReceipt(runtime({ destination: expected.controllerImage }), shared),
+    { operator: "notStrictEqual" },
+  );
 });
 
 test("staged release chart records both verified digests and defaults to the controller digest", async (t) => {
@@ -198,40 +224,57 @@ test("chart push accepts a digest on stderr only after a successful exit", async
   await chmod(helm, 0o700);
   assert.equal(pushChart("chart.tgz", "oci://registry.invalid/charts"), reported);
   await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n' >&2\nexit 1\n`);
-  assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"));
+  assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"), {
+    actual: 1,
+    expected: 0,
+  });
+  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n'\n`);
+  assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"), {
+    message: /^Helm did not report the chart digest on stderr\./,
+  });
 });
 
 test("container release requires manual execution of the trusted main workflow", () => {
   for (const context of [
     { env, repo },
-    { env: { ...env, PUBLISH: "false" }, repo: { ...repo, private: false } },
+    { env: { ...env, PUBLISH: "false" }, repo: { ...repo, private: true } },
   ]) {
     validateContext(context.env, context.repo);
-    for (const patch of [
-      { GITHUB_EVENT_NAME: "pull_request" },
-      { GITHUB_REF: "refs/tags/main" },
-      { GITHUB_WORKFLOW_REF: `${repository}/${publishWorkflow}@refs/heads/contributor` },
-      { GITHUB_WORKFLOW_SHA: "main" },
-      { GITHUB_SHA: "b".repeat(40) },
-      { SOURCE_SHA: "main" },
-      { GITHUB_REPOSITORY: "other/enterprise" },
+    const contributor = `${repository}/${publishWorkflow}@refs/heads/contributor`;
+    for (const [patch, guard] of [
+      [{ GITHUB_EVENT_NAME: "pull_request" }, { message: /^Only manual dispatch is supported\./ }],
+      [{ GITHUB_REF: "refs/tags/main" }, { message: /^Select the trusted main workflow\./ }],
+      [{ GITHUB_WORKFLOW_REF: contributor }, { actual: contributor }],
+      [{ GITHUB_WORKFLOW_SHA: "main" }, { operator: "match", actual: "main" }],
+      [{ GITHUB_SHA: "b".repeat(40) }, { actual: "b".repeat(40), expected: sourceSha }],
+      [{ SOURCE_SHA: "main" }, { message: /^A full immutable source SHA is required\./ }],
+      [
+        { GITHUB_REPOSITORY: "other/enterprise" },
+        { message: /^Only the Enterprise repository may publish\./ },
+      ],
     ]) {
-      assert.throws(() => validateContext({ ...context.env, ...patch }, context.repo));
+      assert.throws(() => validateContext({ ...context.env, ...patch }, context.repo), guard);
     }
-    for (const patch of [{ full_name: "other/enterprise" }, { default_branch: "other" }]) {
-      assert.throws(() => validateContext(context.env, { ...context.repo, ...patch }));
+    for (const [patch, actual, expected] of [
+      [{ full_name: "other/enterprise" }, "other/enterprise", repository],
+      [{ default_branch: "other" }, "other", "main"],
+    ]) {
+      assert.throws(() => validateContext(context.env, { ...context.repo, ...patch }), {
+        actual,
+        expected,
+      });
     }
   }
 });
 
-test("public container preparation requires the exact false string", () => {
-  validateContext({ ...env, PUBLISH: "false" }, { ...repo, private: false });
+test("private-source container preparation requires the exact false string", () => {
+  validateContext({ ...env, PUBLISH: "false" }, { ...repo, private: true });
   validateContext({ ...env, PUBLISH: "false" }, repo);
   for (const PUBLISH of ["true", undefined, "", "FALSE", "0", false]) {
     validateContext({ ...env, PUBLISH }, repo);
     assert.throws(
-      () => validateContext({ ...env, PUBLISH }, { ...repo, private: false }),
-      /Publication requires the private Enterprise repository/,
+      () => validateContext({ ...env, PUBLISH }, { ...repo, private: true }),
+      /Publication requires the public Enterprise repository/,
     );
   }
 });
@@ -239,8 +282,9 @@ test("public container preparation requires the exact false string", () => {
 for (const workflow of [
   ".github/workflows/container-promote.yml",
   ".github/workflows/container-bootstrap.yml",
+  ".github/workflows/container-resume.yml",
 ]) {
-  test(`${workflow} retains private source and workflow identity even with PUBLISH false`, () => {
+  test(`${workflow} requires public source and workflow identity even with PUBLISH false`, () => {
     const promotion = {
       ...env,
       GITHUB_WORKFLOW_REF: `${repository}/${workflow}@refs/heads/main`,
@@ -248,11 +292,14 @@ for (const workflow of [
     for (const PUBLISH of [undefined, "true", "false"]) {
       validateContext({ ...promotion, PUBLISH }, repo, workflow);
       assert.throws(
-        () => validateContext({ ...promotion, PUBLISH }, { ...repo, private: false }, workflow),
-        /Publication requires the private Enterprise repository/,
+        () => validateContext({ ...promotion, PUBLISH }, { ...repo, private: true }, workflow),
+        /Publication requires the public Enterprise repository/,
       );
     }
-    assert.throws(() => validateContext({ ...env, PUBLISH: "false" }, repo, workflow));
+    assert.throws(() => validateContext({ ...env, PUBLISH: "false" }, repo, workflow), {
+      actual: env.GITHUB_WORKFLOW_REF,
+      expected: `${repository}/${workflow}@refs/heads/main`,
+    });
   });
 }
 
@@ -282,7 +329,7 @@ test("only explicit bootstrap lookups tolerate missing package metadata", async 
     }
     t.mock.restoreAll();
   }
-  const pkg = { name: "example", visibility: "private" };
+  const pkg = { name: "example", visibility: "public" };
   t.mock.method(globalThis, "fetch", async () => Response.json(pkg));
   assert.deepEqual(
     await github("orgs/openclaw/packages/container/example", { allowNotFound: true }),
@@ -293,7 +340,12 @@ test("only explicit bootstrap lookups tolerate missing package metadata", async 
 test("container context rejects malformed repository privacy in preparation and publication", () => {
   for (const privateValue of [undefined, null, "false", "true", 0, 1, {}, []]) {
     for (const PUBLISH of ["false", "true", undefined]) {
-      assert.throws(() => validateContext({ ...env, PUBLISH }, { ...repo, private: privateValue }));
+      assert.throws(
+        () => validateContext({ ...env, PUBLISH }, { ...repo, private: privateValue }),
+        {
+          message: /^Repository privacy must be a boolean\./,
+        },
+      );
     }
   }
 });
@@ -310,7 +362,7 @@ test("post-marker metadata retries only 404 and remains bounded", async (t) => {
   });
   // Accelerate only the backoff; the real client still interprets API responses.
   t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
-  const pkg = { name: "example", package_type: "container", visibility: "private" };
+  const pkg = { name: "example", package_type: "container", visibility: "public" };
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () =>
     ++calls === 1 ? new Response(null, { status: 404 }) : Response.json(pkg),
@@ -350,7 +402,7 @@ test("GHCR publication accepts omitted repository metadata without approval and 
   let pkg = {
     name: "openclaw-enterprise-controller",
     package_type: "container",
-    visibility: "private",
+    visibility: "public",
   };
   t.mock.method(globalThis, "fetch", async (url) => {
     const path = new URL(url).pathname;
@@ -365,17 +417,17 @@ test("GHCR publication accepts omitted repository metadata without approval and 
   await verifyGhcr(image, digest, `sha-${sourceSha}`);
   pkg.repository = null;
   await verifyGhcr(image, digest, `sha-${sourceSha}`);
-  for (const patch of [
-    { visibility: "public" },
-    { visibility: undefined },
-    { name: "other" },
-    { repository: { ...repo, full_name: "openclaw/other" } },
-    { repository: { ...repo, private: false } },
-    { repository: {} },
+  for (const [patch, guard] of [
+    [{ visibility: "private" }, publicOnly],
+    [{ visibility: undefined }, publicOnly],
+    [{ name: "other" }, { actual: "other", expected: "openclaw-enterprise-controller" }],
+    [{ repository: { ...repo, full_name: "openclaw/other" } }, linkFirst],
+    [{ repository: { ...repo, private: true } }, { actual: true, expected: false }],
+    [{ repository: {} }, linkFirst],
   ]) {
     const original = pkg;
     pkg = { ...pkg, ...patch };
-    await assert.rejects(verifyGhcr(image, digest, `sha-${sourceSha}`));
+    await assert.rejects(verifyGhcr(image, digest, `sha-${sourceSha}`), guard);
     pkg = original;
   }
   // Explicit correct repository metadata remains valid.
@@ -403,25 +455,60 @@ test("container release requires exact successful CI identity and its aggregate 
     { name: "CI Required", head_sha: sourceSha, conclusion: "success", status: "completed" },
   ];
   validateCi(run, workflow, jobs, sourceSha, "456", "2");
-  for (const patch of [
-    { workflow_id: 999 },
-    { head_sha: "b".repeat(40) },
-    { head_branch: "feature" },
-    { event: "pull_request" },
-    { event: "workflow_dispatch" },
-    { status: "in_progress" },
-    { conclusion: "failure" },
-    { run_attempt: 3 },
-    { head_repository: { full_name: "other/enterprise" } },
+  const pushOnly = { message: /^PR and arbitrary dispatch checks are not release evidence\./ };
+  const other = { full_name: "other/enterprise" };
+  for (const [patch, guard] of [
+    [{ id: 999 }, { actual: "999", expected: "456" }],
+    [{ workflow_id: 999 }, { message: /^CI workflow identity must match, not just its name\./ }],
+    [{ path: ".github/workflows/other.yml" }, { actual: ".github/workflows/other.yml" }],
+    [{ repository: other }, { actual: other.full_name, expected: repository }],
+    [{ head_repository: other }, { actual: other.full_name, expected: repository }],
+    [{ head_sha: "b".repeat(40) }, { message: /^CI must have tested this exact source\./ }],
+    [{ head_branch: "feature" }, { actual: "feature", expected: "main" }],
+    [{ event: "pull_request" }, pushOnly],
+    [{ event: "workflow_dispatch" }, pushOnly],
+    [{ status: "in_progress" }, { actual: "in_progress", expected: "completed" }],
+    [{ conclusion: "failure" }, { message: /^The entire CI run must succeed\./ }],
+    [{ run_attempt: 3 }, { actual: "3", expected: "2" }],
   ]) {
-    assert.throws(() => validateCi({ ...run, ...patch }, workflow, jobs, sourceSha, "456", "2"));
+    assert.throws(
+      () => validateCi({ ...run, ...patch }, workflow, jobs, sourceSha, "456", "2"),
+      guard,
+    );
   }
-  for (const invalidJobs of [[], [...jobs, ...jobs], [{ ...jobs[0], conclusion: "skipped" }]]) {
-    assert.throws(() => validateCi(run, workflow, invalidJobs, sourceSha, "456", "2"));
+  assert.throws(() => validateCi(run, workflow, jobs, sourceSha, "latest", "2"), {
+    operator: "match",
+    actual: "latest",
+  });
+  assert.throws(
+    () => validateCi({ ...run, run_attempt: "latest" }, workflow, jobs, sourceSha, "456"),
+    {
+      operator: "match",
+      actual: "latest",
+    },
+  );
+  for (const [patch, actual, expected] of [
+    [{ path: ".github/workflows/other.yml" }, ".github/workflows/other.yml", workflow.path],
+    [{ state: "disabled_manually" }, "disabled_manually", "active"],
+  ]) {
+    assert.throws(() => validateCi(run, { ...workflow, ...patch }, jobs, sourceSha, "456", "2"), {
+      actual,
+      expected,
+    });
+  }
+  const oneRequired = { message: /^Exactly one CI Required aggregate job is required\./ };
+  for (const [invalidJobs, guard] of [
+    [[], oneRequired],
+    [[...jobs, ...jobs], oneRequired],
+    [[{ ...jobs[0], conclusion: "skipped" }], { actual: "skipped", expected: "success" }],
+    [[{ ...jobs[0], status: "in_progress" }], { actual: "in_progress", expected: "completed" }],
+    [[{ ...jobs[0], head_sha: "b".repeat(40) }], { actual: "b".repeat(40), expected: sourceSha }],
+  ]) {
+    assert.throws(() => validateCi(run, workflow, invalidJobs, sourceSha, "456", "2"), guard);
   }
 });
 
-test("container publication requires main-only environments and private matching packages", () => {
+test("container publication requires main-only environments and public matching packages", () => {
   const environment = {
     name: "container-publish",
     can_admins_bypass: false,
@@ -430,37 +517,58 @@ test("container publication requires main-only environments and private matching
   };
   const policies = [{ name: "main", type: "branch" }];
   validateEnvironment(environment, policies);
-  assert.throws(() => validateEnvironment({ ...environment, can_admins_bypass: true }, policies));
-  assert.throws(() =>
-    validateEnvironment({ ...environment, can_admins_bypass: undefined }, policies),
-  );
-  assert.throws(() => validateEnvironment(environment, [{ name: "*", type: "branch" }]));
-  assert.throws(() => validateEnvironment(environment, [{ name: "main", type: "tag" }]));
+  const branchPolicy = (patch) => ({
+    ...environment,
+    deployment_branch_policy: { ...environment.deployment_branch_policy, ...patch },
+  });
+  const noBypass = { message: /^Disable administrator environment bypass\./ };
+  for (const [changed, guard] of [
+    [
+      { ...environment, name: "other" },
+      { actual: "other", expected: "container-publish" },
+    ],
+    [{ ...environment, can_admins_bypass: true }, noBypass],
+    [{ ...environment, can_admins_bypass: undefined }, noBypass],
+    [branchPolicy({ custom_branch_policies: false }), { actual: false, expected: true }],
+    [branchPolicy({ protected_branches: true }), { actual: true, expected: false }],
+  ]) {
+    assert.throws(() => validateEnvironment(changed, policies), guard);
+  }
+  for (const changed of [[{ name: "*", type: "branch" }], [{ name: "main", type: "tag" }]]) {
+    assert.throws(() => validateEnvironment(environment, changed), {
+      message: /^The publishing environment must allow only the main branch, not tags\./,
+    });
+  }
   const image = "ghcr.io/openclaw/openclaw-enterprise/controller";
   const pkg = {
     name: "openclaw-enterprise/controller",
     package_type: "container",
-    visibility: "private",
+    visibility: "public",
     repository: repo,
   };
   validatePackage(pkg, image);
   // Missing linkage is allowed explicitly; reported conflicting linkage still fails.
   for (const repository of [undefined, null]) {
     const unreported = { ...pkg, repository };
-    assert.throws(() => validatePackage(unreported, image));
+    assert.throws(() => validatePackage(unreported, image), linkFirst);
     assert.equal(validatePackage(unreported, image, { allowMissingRepository: true }), false);
-    assert.throws(() =>
-      validatePackage({ ...unreported, visibility: "public" }, image, {
-        allowMissingRepository: true,
-      }),
+    assert.throws(
+      () =>
+        validatePackage({ ...unreported, visibility: "private" }, image, {
+          allowMissingRepository: true,
+        }),
+      publicOnly,
     );
   }
-  assert.throws(() => validatePackage({ ...pkg, visibility: "public" }, image));
-  assert.throws(() => validatePackage({ ...pkg, repository: { ...repo, private: false } }, image));
-  assert.throws(() =>
-    validatePackage({ ...pkg, repository: { full_name: "openclaw/openclaw" } }, image),
-  );
-  assert.throws(() => validatePackage({ ...pkg, name: "other" }, image));
+  for (const [patch, guard] of [
+    [{ visibility: "private" }, publicOnly],
+    [{ repository: { ...repo, private: true } }, { actual: true, expected: false }],
+    [{ repository: { full_name: "openclaw/openclaw" } }, linkFirst],
+    [{ name: "other" }, { actual: "other", expected: "openclaw-enterprise/controller" }],
+    [{ package_type: "npm" }, { actual: "npm", expected: "container" }],
+  ]) {
+    assert.throws(() => validatePackage({ ...pkg, ...patch }, image), guard);
+  }
   for (const destination of [
     "",
     "ghcr.io/other/controller",
@@ -468,7 +576,38 @@ test("container publication requires main-only environments and private matching
     `${image}@${digest}`,
     "docker.io/openclaw/controller",
   ]) {
-    assert.throws(() => ghcrPackageName(destination));
+    assert.throws(() => ghcrPackageName(destination), {
+      message:
+        /^Set an explicit GHCR image in the openclaw organization, without a tag or digest\./,
+    });
+  }
+});
+
+test("private packages are accepted only for explicit marker bootstrap", () => {
+  const image = "ghcr.io/openclaw/openclaw-enterprise-controller";
+  const pkg = {
+    name: "openclaw-enterprise-controller",
+    package_type: "container",
+    repository: repo,
+  };
+  for (const visibility of ["public", "private"]) {
+    validatePackage({ ...pkg, visibility }, image, { allowPrivateBootstrap: true });
+  }
+  assert.throws(() => validatePackage({ ...pkg, visibility: "private" }, image), publicOnly);
+  for (const [patch, guard] of [
+    [{ visibility: "internal" }, publicOnly],
+    [{ visibility: undefined }, publicOnly],
+    [{ repository: { ...repo, private: true } }, { actual: true, expected: false }],
+    [{ repository: { ...repo, full_name: "other/repository" } }, linkFirst],
+    [{ name: "other" }, { actual: "other", expected: "openclaw-enterprise-controller" }],
+  ]) {
+    assert.throws(
+      () =>
+        validatePackage({ ...pkg, visibility: "private", ...patch }, image, {
+          allowPrivateBootstrap: true,
+        }),
+      guard,
+    );
   }
 });
 
@@ -491,14 +630,22 @@ test("prepared OCI metadata cannot cross source, image, attempt, CI or base-imag
   };
   validatePreparedImage(metadata, expected);
   for (const key of Object.keys(expected)) {
-    assert.throws(() => validatePreparedImage({ ...metadata, [key]: "different" }, expected));
+    assert.throws(() => validatePreparedImage({ ...metadata, [key]: "different" }, expected), {
+      message: new RegExp(`^Prepared image ${key} does not match this run\\.`),
+    });
   }
-  assert.throws(() => validatePreparedImage({ ...metadata, digest: "latest" }, expected));
-  assert.throws(() => validatePreparedImage({ ...metadata, platforms: ["linux/amd64"] }, expected));
-  assert.throws(() => validatePreparedImage({ ...metadata, platforms: ["linux/arm64"] }, expected));
-  assert.throws(() =>
-    validatePreparedImage({ ...metadata, platforms: ["linux/amd64", "linux/amd64"] }, expected),
-  );
+  for (const platforms of [["linux/amd64"], ["linux/arm64"], ["linux/amd64", "linux/amd64"]]) {
+    assert.throws(() => validatePreparedImage({ ...metadata, platforms }, expected), {
+      actual: platforms,
+      expected: metadata.platforms,
+    });
+  }
+  for (const field of ["digest", "archiveSha256"]) {
+    assert.throws(() => validatePreparedImage({ ...metadata, [field]: "latest" }, expected), {
+      operator: "match",
+      actual: "latest",
+    });
+  }
 });
 
 test("OCI archive validation binds both platforms to their real manifest and config blobs", async (t) => {
@@ -562,24 +709,43 @@ test("OCI archive validation binds both platforms to their real manifest and con
       configDigest: configs[index].digest,
     })),
   );
-  for (const invalid of [
-    [manifests[0]],
-    [manifests[1]],
-    [manifests[0], manifests[0]],
-    [manifests[0], { ...manifests[1], platform: { os: "linux", architecture: "s390x" } }],
-    [manifests[0], { ...manifests[1], platform: { os: "linux", architecture: "amd64" } }],
+  const both = ["linux/amd64", "linux/arm64"];
+  const arm64 = (patch) => [manifests[0], { ...manifests[1], ...patch }];
+  for (const [invalid, guard] of [
+    [[manifests[0]], { actual: ["linux/amd64"], expected: both }],
+    [[manifests[1]], { actual: ["linux/arm64"], expected: both }],
+    [[manifests[0], manifests[0]], { actual: ["linux/amd64", "linux/amd64"], expected: both }],
     [
-      manifests[0],
-      { ...manifests[1], platform: { os: "linux", architecture: "arm64", variant: "v9" } },
+      arm64({ platform: { os: "linux", architecture: "s390x" } }),
+      { message: /^Unexpected image platform: linux\/s390x/ },
     ],
+    // The descriptor claims amd64 for the arm64 manifest; its config blob decides.
+    [
+      arm64({ platform: { os: "linux", architecture: "amd64" } }),
+      { message: /^Config platform mismatch\./ },
+    ],
+    [
+      arm64({ platform: { os: "linux", architecture: "arm64", variant: "v9" } }),
+      { message: /^Unsupported platform variant\./ },
+    ],
+    [
+      arm64({ mediaType: "application/vnd.docker.distribution.manifest.v2+json" }),
+      { actual: "application/vnd.docker.distribution.manifest.v2+json" },
+    ],
+    [arm64({ digest: "sha256:arm64" }), { operator: "match", actual: "sha256:arm64" }],
   ]) {
     const input = await archive(invalid);
-    assert.throws(() => readArchivePlatforms(...input));
+    assert.throws(() => readArchivePlatforms(...input), guard);
   }
-  // Replacing an architecture's blob without updating its digest must fail.
-  await writeFile(join(directory, "blobs/sha256", configs[1].digest.slice(7)), "{}");
+  // Replacing an architecture's blob without updating its digest must fail, even when the
+  // replacement is a valid config for the same platform.
+  const replacement = JSON.stringify({ architecture: "arm64", os: "linux", replaced: true });
+  await writeFile(join(directory, "blobs/sha256", configs[1].digest.slice(7)), replacement);
   const corrupt = await archive(manifests);
-  assert.throws(() => readArchivePlatforms(...corrupt));
+  assert.throws(() => readArchivePlatforms(...corrupt), {
+    actual: `sha256:${createHash("sha256").update(replacement).digest("hex")}`,
+    expected: configs[1].digest,
+  });
 });
 
 test("metadata GET transport retries are bounded, diagnostic and do not retry denials", async (t) => {
@@ -608,9 +774,9 @@ test("metadata GET transport retries are bounded, diagnostic and do not retry de
         },
       };
     }
-    return Response.json({ visibility: "private" });
+    return Response.json({ visibility: "public" });
   });
-  assert.deepEqual(await github(path), { visibility: "private" });
+  assert.deepEqual(await github(path), { visibility: "public" });
   assert.equal(calls, 3);
   calls = 0;
   t.mock.method(globalThis, "fetch", async () => {
@@ -782,4 +948,25 @@ test("separate platform exports assemble into a digest-bound archive and reject 
     assert.throws(() => run(invalid), /mismatch|native runner/);
     await assert.rejects(readFile(invalid.env.GITHUB_OUTPUT), { code: "ENOENT" });
   }
+});
+
+test("the runtime release smoke runs every Image Runtime Startup file", () => {
+  const { lanes } = loadTestSuites(
+    fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
+  );
+  const laneFiles = ["images-runtime-startup", "images-runtime-startup-2"].flatMap((lane) =>
+    lanes[lane].files.map((file) => file.path),
+  );
+  // The model probe outcomes moved into lane 2 from Image Model Probes, whose files
+  // the release smoke has never run. Every other file a lane splits off must stay in
+  // the release smoke, or a native-platform release loses those cases silently.
+  const ciOnly = ["tests/integration/runtime-image-model-probe-outcomes.test.mjs"];
+  for (const path of ciOnly) {
+    assert.ok(laneFiles.includes(path), `${path} is no longer in a runtime startup lane.`);
+  }
+  assert.deepEqual(
+    [...runtimeImageSmokeTests].sort(),
+    laneFiles.filter((path) => !ciOnly.includes(path)).sort(),
+    "Keep the release smoke list equal to the lane files; drop a ciOnly entry once the smoke runs it.",
+  );
 });

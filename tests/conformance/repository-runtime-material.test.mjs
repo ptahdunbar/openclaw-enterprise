@@ -3,9 +3,9 @@ import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import {
   KubernetesComputeDriver,
-  kubernetesGatewayNamespaceName,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -129,6 +129,8 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     },
     { nodeEnrollment },
   );
+  // Fixture failures are final; skip the driver's API retry waits.
+  driver.waitBeforeRetry = async () => {};
   const revision = {
     id: "revision-repository-material",
     namespaceId: "namespace-repository-material",
@@ -140,6 +142,8 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     configurationGeneration: 1,
     configuration: {
       gateway: {
+        // Kubernetes renders lan for an omitted bind; this admitted document already is.
+        bind: "lan",
         trustedProxies: ["127.0.0.1/32"],
         allowRealIpFallback: true,
         auth: {
@@ -185,6 +189,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
   }
   if (nodeEnrollment !== undefined) {
     revision.configuration.gateway = {
+      bind: "lan",
       trustedProxies: ["10.42.0.0/16"],
       allowRealIpFallback: true,
       auth: {
@@ -294,7 +299,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     kind: "Secret",
     metadata: {
       name: "model-key",
-      namespace: kubernetesGatewayNamespaceName(revision.namespaceId),
+      namespace: kubernetesNamespaceName(revision.namespaceId),
       uid: "model-key-uid",
     },
     data: { value: Buffer.from("fixture-key").toString("base64") },
@@ -473,7 +478,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     harnessAuth: {
       ...revision.harnessAuth,
       backendRef: {
-        namespaceName: kubernetesGatewayNamespaceName(revision.namespaceId),
+        namespaceName: kubernetesNamespaceName(revision.namespaceId),
         name: "model-key",
         key: "value",
         uid: "model-key-uid",
@@ -487,9 +492,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       (object) =>
         object.kind === "Secret" &&
         object.metadata.namespace === namespace &&
-        !object.metadata.name.startsWith("gateway-secrets-") &&
-        !object.metadata.name.startsWith("harness-secrets-") &&
-        !object.metadata.name.startsWith("workspace-node-"),
+        object.metadata.labels?.["openclaw.dev/repository-material"] === "session",
     );
   const enroll = (selected) => {
     const name = driver.workspaceNodeName(selected);
@@ -614,10 +617,14 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   const agent = f.consumer();
   const gateway = f.deployments().find((deployment) => deployment !== agent);
-  assert.equal(
-    preparedNativeDocument(f),
-    original,
-    "the separate gateway receives no native exec prefix",
+  const gatewayConfiguration = JSON.parse(preparedNativeDocument(f));
+  // Compute adds the hook callback independently of repository credential custody.
+  // Repository material must leave every other Gateway setting unchanged.
+  delete gatewayConfiguration.plugins.entries.codex.config.appServer.nativeHookRelay;
+  assert.deepEqual(
+    gatewayConfiguration,
+    JSON.parse(original),
+    "repository material does not change the separate Gateway's execution configuration",
   );
   const assertGatewayIsolated = (deployment) => {
     const pod = deployment.spec.template.spec;
@@ -1367,68 +1374,68 @@ for (const mode of ["embedded", "dedicated"]) {
   });
 }
 
-test("Kubernetes projects the repository client into native exec paths without changing admitted configuration", async (t) => {
-  for (const roster of ["list", "entries"]) {
-    await t.test(roster, async () => {
+// OCC refuses a nonempty agents.list and the pinned OpenClaw Gateway rejects any list, so
+// the projected roster is the keyed agents.entries.
+test("Kubernetes projects the repository client into native exec paths without changing admitted configuration", async () => {
+  const f = await fixture();
+  const shim = "/opt/oce/repository-credentials/bin";
+  f.revision.configuration.tools = {
+    allow: ["exec", "process"],
+    exec: {
+      host: "gateway",
+      mode: "full",
+      timeoutSec: 120,
+      pathPrepend: ["/operator/bin", shim, "/shared/bin", shim],
+    },
+  };
+  f.revision.configuration.agents.ownership = "explicit";
+  f.revision.configuration.agents.entries = {
+    custom: {
+      tools: {
+        allow: ["exec"],
+        exec: { host: "gateway", mode: "full", pathPrepend: ["/agent/bin", shim] },
+      },
+    },
+    "own-exec": { tools: { exec: { mode: "full" } } },
+    inherits: { tools: { allow: ["exec", "process"] } },
+    plain: {},
+  };
+  const original = structuredClone(f.revision.configuration);
+  deepFreeze(f.revision.configuration);
+
+  // The actual runtime document must survive OpenClaw's exec environment
+  // construction; setting only the Kubernetes container PATH is insufficient.
+  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
+  const expected = structuredClone(original);
+  expected.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
+  expected.agents.entries.custom.tools.exec.pathPrepend = [shim, "/agent/bin"];
+  expected.agents.entries["own-exec"].tools.exec.pathPrepend = [
+    shim,
+    "/operator/bin",
+    "/shared/bin",
+  ];
+  assert.deepEqual(JSON.parse(preparedNativeDocument(f)), expected);
+  assert.deepEqual(f.revision.configuration, original);
+});
+
+test("Kubernetes supplies a native repository exec prefix when no tools configuration exists", async (t) => {
+  // OpenClaw drops an empty agents.list beside an implicit empty roster, so it passes through.
+  for (const list of [undefined, []]) {
+    await t.test(list === undefined ? "no list" : "empty list", async () => {
       const f = await fixture();
-      const shim = "/opt/oce/repository-credentials/bin";
-      f.revision.configuration.tools = {
-        allow: ["exec", "process"],
-        exec: {
-          host: "gateway",
-          mode: "full",
-          timeoutSec: 120,
-          pathPrepend: ["/operator/bin", shim, "/shared/bin", shim],
-        },
-      };
-      f.revision.configuration.agents.ownership = "explicit";
-      f.revision.configuration.agents.list = [
-        {
-          id: "custom",
-          tools: {
-            allow: ["exec"],
-            exec: { host: "gateway", mode: "full", pathPrepend: ["/agent/bin", shim] },
-          },
-        },
-        { id: "own-exec", tools: { exec: { mode: "full" } } },
-        { id: "inherits", tools: { allow: ["exec", "process"] } },
-        { id: "plain" },
-      ];
-      if (roster === "entries") {
-        f.revision.configuration.agents.entries = Object.fromEntries(
-          f.revision.configuration.agents.list.map(({ id, ...entry }) => [id, entry]),
-        );
-        delete f.revision.configuration.agents.list;
+      if (list !== undefined) {
+        f.revision.configuration.agents.list = list;
       }
       const original = structuredClone(f.revision.configuration);
       deepFreeze(f.revision.configuration);
-
-      // The actual runtime document must survive OpenClaw's exec environment
-      // construction; setting only the Kubernetes container PATH is insufficient.
       await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-      const expected = structuredClone(original);
-      expected.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
-      const custom = roster === "list" ? expected.agents.list[0] : expected.agents.entries.custom;
-      const ownExec =
-        roster === "list" ? expected.agents.list[1] : expected.agents.entries["own-exec"];
-      custom.tools.exec.pathPrepend = [shim, "/agent/bin"];
-      ownExec.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
-      assert.deepEqual(JSON.parse(preparedNativeDocument(f)), expected);
+      assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
+        ...original,
+        tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
+      });
       assert.deepEqual(f.revision.configuration, original);
     });
   }
-});
-
-test("Kubernetes supplies a native repository exec prefix when no tools configuration exists", async () => {
-  const f = await fixture();
-  const original = structuredClone(f.revision.configuration);
-  deepFreeze(f.revision.configuration);
-  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-  assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
-    ...original,
-    tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
-  });
-  assert.deepEqual(f.revision.configuration, original);
 });
 
 test("Kubernetes preserves native configuration bytes without repository bindings", async (t) => {
@@ -1450,43 +1457,109 @@ test("Kubernetes preserves native configuration bytes without repository binding
 });
 
 test("Kubernetes rejects malformed repository exec configuration before any API access", async (t) => {
+  const rosterRefusal =
+    "The OpenClaw Gateway rejects agents.list: remove it and configure each Agent under agents.entries, keyed by its Agent ID.";
   const malformed = [
-    ["tools null", { tools: null }],
-    ["tools array", { tools: [] }],
-    ["exec string", { tools: { exec: "full" } }],
-    ["exec null", { tools: { exec: null } }],
-    ["exec array", { tools: { exec: [] } }],
-    ["prefix scalar", { tools: { exec: { pathPrepend: "/operator/bin" } } }],
-    ["prefix null", { tools: { exec: { pathPrepend: null } } }],
-    ["prefix nonstring", { tools: { exec: { pathPrepend: ["/operator/bin", 1] } } }],
-    ["agents null", { agents: null }],
-    ["agents array", { agents: [] }],
-    ["agent list object", { agents: { list: {} } }],
-    ["agent list null", { agents: { list: null } }],
-    ["agent entries null", { agents: { entries: null } }],
-    ["agent entries array", { agents: { entries: [] } }],
-    ["agent entry null", { agents: { entries: { main: null } } }],
-    ["agent entry exec string", { agents: { entries: { main: { tools: { exec: "full" } } } } }],
+    ["tools null", { tools: null }, "Repository credentials require tools to be an object."],
+    ["tools array", { tools: [] }, "Repository credentials require tools to be an object."],
+    [
+      "exec string",
+      { tools: { exec: "full" } },
+      "Repository credentials require tools.exec to be an object.",
+    ],
+    [
+      "exec null",
+      { tools: { exec: null } },
+      "Repository credentials require tools.exec to be an object.",
+    ],
+    [
+      "exec array",
+      { tools: { exec: [] } },
+      "Repository credentials require tools.exec to be an object.",
+    ],
+    [
+      "prefix scalar",
+      { tools: { exec: { pathPrepend: "/operator/bin" } } },
+      "Repository credentials require tools.exec.pathPrepend to be an array of strings.",
+    ],
+    [
+      "prefix null",
+      { tools: { exec: { pathPrepend: null } } },
+      "Repository credentials require tools.exec.pathPrepend to be an array of strings.",
+    ],
+    [
+      "prefix nonstring",
+      { tools: { exec: { pathPrepend: ["/operator/bin", 1] } } },
+      "Repository credentials require tools.exec.pathPrepend to be an array of strings.",
+    ],
+    ["agents null", { agents: null }, "Repository credentials require agents to be an object."],
+    ["agents array", { agents: [] }, "Repository credentials require agents to be an object."],
+    // The projection leaves agents.list to the roster refusal: the Gateway rejects every list.
+    ["agent list object", { agents: { list: {} } }, rosterRefusal],
+    ["agent list null", { agents: { list: null } }, rosterRefusal],
+    ["agent list entry null", { agents: { list: [null] } }, rosterRefusal],
+    [
+      "agent list prefix nonstring",
+      { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: [false] } } }] } },
+      rosterRefusal,
+    ],
+    [
+      "agent entries null",
+      { agents: { entries: null } },
+      "Repository credentials require agents.entries to be an object.",
+    ],
+    [
+      "agent entries array",
+      { agents: { entries: [] } },
+      "Repository credentials require agents.entries to be an object.",
+    ],
+    [
+      "agent entry null",
+      { agents: { entries: { main: null } } },
+      "Repository credentials require agents.entries entry to be an object.",
+    ],
+    [
+      "agent entry exec string",
+      { agents: { entries: { main: { tools: { exec: "full" } } } } },
+      "Repository credentials require agents.entries entry.tools.exec to be an object.",
+    ],
     [
       "agent entry prefix nonstring",
       { agents: { entries: { main: { tools: { exec: { pathPrepend: [false] } } } } } },
+      "Repository credentials require agents.entries entry.tools.exec.pathPrepend to be an array of strings.",
     ],
-    ["agent null", { agents: { list: [null] } }],
-    ["agent array", { agents: { list: [[]] } }],
-    ["agent tools null", { agents: { list: [{ id: "main", tools: null }] } }],
-    ["agent tools array", { agents: { list: [{ id: "main", tools: [] }] } }],
-    ["agent exec null", { agents: { list: [{ id: "main", tools: { exec: null } }] } }],
-    ["agent exec array", { agents: { list: [{ id: "main", tools: { exec: [] } }] } }],
+    [
+      "agent entry array",
+      { agents: { entries: { main: [] } } },
+      "Repository credentials require agents.entries entry to be an object.",
+    ],
+    [
+      "agent tools null",
+      { agents: { entries: { main: { tools: null } } } },
+      "Repository credentials require agents.entries entry.tools to be an object.",
+    ],
+    [
+      "agent tools array",
+      { agents: { entries: { main: { tools: [] } } } },
+      "Repository credentials require agents.entries entry.tools to be an object.",
+    ],
+    [
+      "agent exec null",
+      { agents: { entries: { main: { tools: { exec: null } } } } },
+      "Repository credentials require agents.entries entry.tools.exec to be an object.",
+    ],
+    [
+      "agent exec array",
+      { agents: { entries: { main: { tools: { exec: [] } } } } },
+      "Repository credentials require agents.entries entry.tools.exec to be an object.",
+    ],
     [
       "agent prefix scalar",
-      { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: "/agent/bin" } } }] } },
-    ],
-    [
-      "agent prefix nonstring",
-      { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: [false] } } }] } },
+      { agents: { entries: { main: { tools: { exec: { pathPrepend: "/agent/bin" } } } } } },
+      "Repository credentials require agents.entries entry.tools.exec.pathPrepend to be an array of strings.",
     ],
   ];
-  for (const [name, configuration] of malformed) {
+  for (const [name, configuration, message] of malformed) {
     await t.test(name, async () => {
       const f = await fixture();
       const agentDefaults = f.revision.configuration.agents.defaults;
@@ -1495,7 +1568,9 @@ test("Kubernetes rejects malformed repository exec configuration before any API 
         f.revision.configuration.agents.defaults = agentDefaults;
       }
       const before = structuredClone(f.revision.configuration);
-      await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])));
+      await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])), {
+        message,
+      });
       assert.deepEqual(
         f.apiCalls,
         [],
@@ -1503,7 +1578,9 @@ test("Kubernetes rejects malformed repository exec configuration before any API 
       );
       // Activation is a separate reconciliation entrypoint and must not bypass
       // the same native configuration validation before consulting workloads.
-      await assert.rejects(f.driver.activateRevision(f.revision, f.context([runtimeBinding()])));
+      await assert.rejects(f.driver.activateRevision(f.revision, f.context([runtimeBinding()])), {
+        message,
+      });
       assert.deepEqual(f.apiCalls, [], "activation must reject before Kubernetes reads or writes");
       assert.deepEqual(f.revision.configuration, before);
     });
@@ -1560,6 +1637,7 @@ for (const mode of ["embedded", "dedicated"]) {
         assert.deepEqual(native.volumeMounts, [{ ...mount, readOnly: false }]);
         assert.equal(pod.securityContext.runAsNonRoot, true);
         for (const initializer of [init, native]) {
+          assert.deepEqual(initializer.command, [...SETUP_WRAPPER_COMMAND]);
           assert.equal(initializer.securityContext.readOnlyRootFilesystem, true);
           assert.equal(initializer.securityContext.allowPrivilegeEscalation, false);
           assert.deepEqual(initializer.securityContext.capabilities, { drop: ["ALL"] });
@@ -1642,13 +1720,39 @@ for (const mode of ["embedded", "dedicated"]) {
           ready: false,
           repositoryCredentialMaterialMissing: [missing],
         });
-        await assert.rejects(f.driver.activateRevision(f.revision, context));
+        // Dedicated activation reports the missing material. Embedded activation refuses
+        // earlier: preparation stopped, so the shared gateway Deployment was never created.
+        await assert.rejects(
+          f.driver.activateRevision(f.revision, context),
+          mode === "dedicated"
+            ? {
+                name: "DependencyUnavailableError",
+                message: "Repository credential material is unavailable for activation.",
+              }
+            : { message: "The Agent gateway workload is unavailable." },
+        );
         assert.equal(
           f.calls.filter((call) => call.operation === "write" && call.kind === "Secret").length,
           0,
         );
         assert.equal(f.secrets().length, 0);
         assert.equal(f.deployments().length, 0);
+        if (mode === "embedded") {
+          // Once the shared gateway exists, embedded activation reaches the same refusal and
+          // publishes no Secret for the set while one retained reference is missing.
+          const project = runtimeBinding("session_material_project");
+          await f.driver.prepareRevision(f.revision, f.context([pending, project]));
+          assert.equal(f.deployments().length, 1);
+          const writes = f.calls.length;
+          await assert.rejects(f.driver.activateRevision(f.revision, context), {
+            name: "DependencyUnavailableError",
+            message: "Repository credential material is unavailable for activation.",
+          });
+          assert.deepEqual(
+            f.calls.slice(writes).filter((call) => call.operation === "write"),
+            [],
+          );
+        }
       },
     );
 
@@ -1660,7 +1764,9 @@ for (const mode of ["embedded", "dedicated"]) {
         const document = JSON.parse(binding.files["client.json"]);
         document.sessionId = "another-session";
         binding.files["client.json"] = JSON.stringify(document);
-        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([binding])));
+        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([binding])), {
+          message: "Repository credential material is invalid.",
+        });
         assert.equal(f.secrets().length, 0);
         assert.equal(f.deployments().length, 0);
       },
@@ -1689,11 +1795,23 @@ for (const mode of ["embedded", "dedicated"]) {
           }
           return create(request);
         };
-        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([first, second])));
+        // The API error is replaced so a Secret body it may carry never reaches callers.
+        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([first, second])), {
+          message: "Repository credential material could not be created.",
+        });
         assert.equal(f.secrets().length, 1);
         assert.equal(f.deployments().length, 0);
         await f.driver.stopRevision(f.revision);
         assert.equal(f.secrets().length, 0);
+        // A conflict whose Secret is gone by the follow-up read cannot confirm custody.
+        f.clients.core.createNamespacedSecret = async () => {
+          throw Object.assign(new Error("Secret already exists"), { statusCode: 409 });
+        };
+        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([first, second])), {
+          message: "Repository credential material creation could not be confirmed.",
+        });
+        assert.equal(f.secrets().length, 0);
+        assert.equal(f.deployments().length, 0);
       },
     );
 
@@ -1802,7 +1920,10 @@ for (const mode of ["embedded", "dedicated"]) {
         f.setPods([oldPod, replacementPod]);
         const waiting = await f.driver.prepareRevision(f.revision, f.context([replacement]));
         assert.equal(waiting.ready, false);
-        await assert.rejects(f.driver.activateRevision(f.revision, f.context([replacement])));
+        await assert.rejects(f.driver.activateRevision(f.revision, f.context([replacement])), {
+          name: "DependencyUnavailableError",
+          message: "The exact repository credential runtime generation is not ready.",
+        });
 
         replacementPod.status.conditions = [{ type: "Ready", status: "True" }];
         f.setPods([replacementPod]);
@@ -1871,10 +1992,8 @@ for (const mode of ["embedded", "dedicated"]) {
           createdAt: f.revision.createdAt,
         });
         assert.equal(result.namespaceDeleted, true, JSON.stringify(result));
-        assert.deepEqual(
-          f.secrets().map((secret) => secret.metadata.name),
-          ["external-owner"],
-        );
+        assert.deepEqual(f.secrets(), []);
+        assert.ok(f.objects.has(`Secret:${f.namespace}:external-owner`));
         assert.ok(f.objects.has(`Namespace::${f.namespace}`));
       },
     );

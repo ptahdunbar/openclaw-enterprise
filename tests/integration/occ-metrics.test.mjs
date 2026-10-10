@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -55,20 +56,43 @@ test("API metrics follow real authenticated routes and keep replica registries i
 
 test("metrics settings reject exposed development binds and disabled stray settings", () => {
   assert.equal(metricsConfiguration({}, "development"), undefined);
-  for (const environment of [
-    { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "0.0.0.0", OCC_METRICS_PORT: "9464" },
-    { OCC_METRICS_ENABLED: "false", OCC_METRICS_PORT: "9464" },
-    { OCC_METRICS_ENABLED: "yes" },
-    { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "127.0.0.1", OCC_METRICS_PORT: "0" },
+  for (const [environment, refusal] of [
+    [
+      { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "0.0.0.0", OCC_METRICS_PORT: "9464" },
+      /Development metrics require loopback/,
+    ],
+    [
+      { OCC_METRICS_ENABLED: "false", OCC_METRICS_PORT: "9464" },
+      /Disabled metrics cannot have host or port settings/,
+    ],
+    [{ OCC_METRICS_ENABLED: "yes" }, /OCC_METRICS_ENABLED must be true or false/],
+    [
+      { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "127.0.0.1", OCC_METRICS_PORT: "0" },
+      /OCC_METRICS_PORT must be a distinct valid TCP port/,
+    ],
+    [
+      { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "localhost", OCC_METRICS_PORT: "9464" },
+      /OCC_METRICS_HOST must be an explicit IP address/,
+    ],
   ]) {
-    assert.throws(() => metricsConfiguration(environment, "development"));
+    assert.throws(() => metricsConfiguration(environment, "development"), refusal);
   }
-  for (const host of ["::", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "127.0.0.2"]) {
-    assert.throws(() =>
+  assert.throws(
+    () =>
       metricsConfiguration(
-        { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: host, OCC_METRICS_PORT: "9464" },
-        "production",
+        { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: "127.0.0.1", OCC_METRICS_PORT: "9464" },
+        "test",
       ),
+    /Metrics require development or production mode/,
+  );
+  for (const host of ["::", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "127.0.0.2"]) {
+    assert.throws(
+      () =>
+        metricsConfiguration(
+          { OCC_METRICS_ENABLED: "true", OCC_METRICS_HOST: host, OCC_METRICS_PORT: "9464" },
+          "production",
+        ),
+      /Production metrics require an explicit Pod interface address/,
     );
   }
 });
@@ -210,3 +234,183 @@ test(
     assert.equal((await fetch(`${listener.url}/metrics`)).status, 503);
   },
 );
+
+// Use the actual pg pool with an in-process client so transport-event ownership
+// is tested without a PostgreSQL listener, database, or credential.
+function controlledMetricsPool() {
+  let client;
+  let resolveStarted;
+  const started = new Promise((resolve) => {
+    resolveStarted = resolve;
+  });
+  const releases = [];
+  const poolErrors = [];
+  class ControlledClient extends EventEmitter {
+    constructor() {
+      super();
+      client = this;
+      this._queryable = true;
+      this._ending = false;
+    }
+    connect(callback) {
+      queueMicrotask(() => callback(null));
+    }
+    query() {
+      return new Promise((resolve, reject) => {
+        this.resolveQuery = resolve;
+        this.rejectQuery = reject;
+        resolveStarted();
+      });
+    }
+    end(callback) {
+      this._ending = true;
+      queueMicrotask(() => callback?.());
+    }
+  }
+  const pool = new pg.Pool({ Client: ControlledClient, max: 1, idleTimeoutMillis: 0 });
+  pool.on("release", (error) => releases.push(error));
+  pool.on("error", (error) => poolErrors.push(error));
+  return {
+    pool,
+    started,
+    releases,
+    poolErrors,
+    get client() {
+      return client;
+    },
+  };
+}
+
+const controlledMetricsRow = Object.freeze({
+  agents: { draft: 0, deploying: 0, running: 1, stopping: 0, stopped: 0, failed: 0 },
+  pending: 0,
+  oldestPendingAgeSeconds: 0,
+});
+
+// Starts a collection on a controlled pool client and waits for its query.
+// `settle` ends that query at cleanup so the pool can close.
+async function startCollection(t, settle) {
+  const f = controlledMetricsPool();
+  const operation = new PostgresMetricsSnapshot(f.pool).collect();
+  operation.catch(() => {});
+  await f.started;
+  t.after(async () => {
+    settle(f.client);
+    await operation.catch(() => {});
+    await f.pool.end();
+  });
+  return { f, operation };
+}
+
+// The collection discarded its only client and the pool saw no error.
+function assertDiscarded(f) {
+  assert.deepEqual(f.releases, [true]);
+  assert.equal(f.pool.totalCount, 0);
+  assert.deepEqual(f.poolErrors, []);
+}
+
+// A collector whose pool hands out `client` directly.
+function directCollector(client) {
+  return new PostgresMetricsSnapshot({
+    async connect() {
+      return client;
+    },
+    async end() {},
+  });
+}
+
+test("metrics owns checked-out transport errors until the rejected query settles", async (t) => {
+  const { f, operation } = await startCollection(t, (client) =>
+    client.rejectQuery(new Error("test cleanup")),
+  );
+  const transport = Object.assign(new Error("controlled transport event"), { code: "ECONNRESET" });
+  const query = new Error("controlled query rejection");
+  f.client.emit("error", transport);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.releases.length, 0, "the in-flight query still owns its client");
+  f.client.rejectQuery(query);
+  await assert.rejects(operation, (error) => error === query);
+  assertDiscarded(f);
+});
+
+test("metrics discards a transport-failed client even if its pending query later succeeds", async (t) => {
+  const { f, operation } = await startCollection(t, (client) =>
+    client.resolveQuery({ rows: [controlledMetricsRow] }),
+  );
+  const transport = new Error("controlled transport event before apparent success");
+  f.client.emit("error", transport);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.releases.length, 0, "do not return a client with an unsettled query");
+  f.client.resolveQuery({ rows: [controlledMetricsRow] });
+  await assert.rejects(operation, (error) => error === transport);
+  assertDiscarded(f);
+});
+
+test("metrics preserves ordinary query rejection and discards its client", async (t) => {
+  const { f, operation } = await startCollection(t, (client) =>
+    client.rejectQuery(new Error("test cleanup")),
+  );
+  const failure = new Error("controlled ordinary query rejection");
+  f.client.rejectQuery(failure);
+  await assert.rejects(operation, (error) => error === failure);
+  assertDiscarded(f);
+});
+
+test("metrics returns a healthy client with only the pool's idle listener retained", async (t) => {
+  const f = controlledMetricsPool();
+  const operation = new PostgresMetricsSnapshot(f.pool).collect();
+  await f.started;
+  t.after(() => f.pool.end());
+  f.client.resolveQuery({ rows: [controlledMetricsRow] });
+  assert.deepEqual(await operation, controlledMetricsRow);
+  assert.deepEqual(f.releases, [false]);
+  assert.equal(f.client.listenerCount("error"), 1);
+  assert.equal(f.pool.idleCount, 1);
+});
+
+test("metrics rejects a transport event during pool handoff instead of returning a snapshot", async () => {
+  const client = new EventEmitter();
+  const transport = new Error("controlled transport event during release");
+  const poolErrors = [];
+  const releases = [];
+  client.query = async () => ({ rows: [controlledMetricsRow] });
+  client.release = (discard) => {
+    releases.push(discard);
+    client.on("error", (error) => poolErrors.push(error));
+    client.emit("error", transport);
+  };
+  await assert.rejects(directCollector(client).collect(), (error) => error === transport);
+  assert.deepEqual(releases, [false]);
+  assert.deepEqual(poolErrors, [transport]);
+  assert.equal(client.listenerCount("error"), 1);
+  client.removeAllListeners();
+});
+
+test("metrics preserves a release failure and keeps error ownership when transfer is unknown", async () => {
+  const client = new EventEmitter();
+  const failure = new Error("controlled release failure");
+  client.query = async () => ({ rows: [controlledMetricsRow] });
+  client.release = () => {
+    throw failure;
+  };
+  await assert.rejects(directCollector(client).collect(), (error) => error === failure);
+  assert.equal(client.listenerCount("error"), 1);
+  assert.doesNotThrow(() => client.emit("error", new Error("late client transport event")));
+  client.removeAllListeners();
+});
+
+test("metrics preserves release error precedence when query and release both fail", async () => {
+  const client = new EventEmitter();
+  const queryFailure = new Error("controlled query failure");
+  const releaseFailure = new Error("controlled release failure");
+  client.query = async () => {
+    throw queryFailure;
+  };
+  client.release = () => {
+    throw releaseFailure;
+  };
+  await assert.rejects(directCollector(client).collect(), (error) => error === releaseFailure);
+  assert.equal(client.listenerCount("error"), 1);
+  assert.doesNotThrow(() => client.emit("error", new Error("late client transport event")));
+  client.removeAllListeners();
+});

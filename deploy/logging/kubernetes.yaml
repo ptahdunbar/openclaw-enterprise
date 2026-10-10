@@ -2,7 +2,13 @@ receivers:
   filelog:
     include:
       - /var/log/pods/*_openclaw-enterprise-*_*/*/*.log
-      - /var/log/pods/*_*-initialization-*_*/*/*.log
+      # The initialization Job's Pods are named by generateName from
+      # `<release>-initialization-`, which Kubernetes cuts to 58 characters
+      # before adding 5 random ones: a 53-character release name keeps only
+      # `-init` of the suffix. Match that remainder and the Job's container names.
+      # Records are classified by Pod labels, not by file name.
+      - /var/log/pods/*_*-init*_*/migration/*.log
+      - /var/log/pods/*_*-init*_*/bootstrap/*.log
       - /var/log/pods/*_gateway-*_*/*/*.log
       - /var/log/pods/*_agent-*_*/*/*.log
     exclude:
@@ -77,6 +83,9 @@ processors:
     log_statements:
       - context: resource
         statements:
+          # k8sattributes reports "latest" for a digest-only Pod image. The repo
+          # digest is the identity, and a real "latest" tag is mutable, so drop it.
+          - delete_key(attributes, "container.image.tag") where attributes["container.image.tag"] == "latest" and attributes["container.image.repo_digests"] != nil
           - keep_keys(attributes, ["k8s.pod.name", "k8s.pod.uid", "k8s.namespace.name", "k8s.node.name", "container.image.name", "container.image.tag", "container.image.repo_digests"])
 
 service:

@@ -8,7 +8,6 @@ import {
   readFile,
   rename,
   rm,
-  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -182,11 +181,15 @@ if (args[0] === "version") {
   const platform = ${JSON.stringify(options.dockerPlatformName ?? "Docker Engine - Community")};
   const server = engine === "docker"
     ? { Platform: { Name: platform }, Components: [{ Name: "Engine" }] }
-    : { Platform: { Name: "Podman Engine" }, Components: [{ Name: "Podman Engine" }] };
+    : {
+        Platform: { Name: podmanDockerApi ? "linux/amd64/fedora-40" : "Podman Engine" },
+        Components: podmanDockerApi
+          ? [{ Name: "Podman Engine" }, { Name: "Engine" }]
+          : [{ Name: "Podman Engine" }],
+      };
   if (args.includes("{{json .Server}}") && (engine === "docker" || podmanDockerApi)) {
     process.stdout.write(JSON.stringify(server) + "\\n");
-  } else if (engine === "docker") process.stdout.write(platform + "\\n");
-  else if (podmanDockerApi) process.stdout.write("Podman Engine\\n");
+  } else if (engine === "docker" || podmanDockerApi) process.stdout.write(server.Platform.Name + "\\n");
   else exit(1);
   exit(0);
 }
@@ -426,7 +429,8 @@ process.exit(86);
 
 // Only external engine and cluster commands are inert. Configuration rendering,
 // selection, state ownership, rollback, and authenticated HTTP use the real code.
-async function prepareLifecycleCommands(fixture, scenario = "success") {
+async function prepareLifecycleCommands(fixture, scenario = "success", options = {}) {
+  const engine = options.engine ?? "docker";
   const bin = join(fixture.directory, "bin");
   // Isolate the launcher contract; real sandbox enforcement is covered by the
   // real-cluster lifecycle suite, not this external-command fixture.
@@ -434,11 +438,11 @@ async function prepareLifecycleCommands(fixture, scenario = "success") {
     join(fixture.fixtureRepository, "scripts", "prepare-development-codex-seccomp.mjs"),
     'process.stdout.write(JSON.stringify({ mode: "RuntimeDefault", profileName: "" }));\n',
   );
-  await rename(join(bin, "docker"), join(bin, "docker-config"));
+  await rename(join(bin, engine), join(bin, `${engine}-config`));
   fixture.env.SAFETY_LOG = join(fixture.directory, "lifecycle.log");
   fixture.env.DEV_UP_RESOURCE_STATE = join(fixture.directory, "resources.json");
   fixture.env.DEV_UP_LIFECYCLE_SCENARIO = scenario;
-  fixture.env.OCC_DEVELOPMENT_CONTAINER_ENGINE = "docker";
+  fixture.env.OCC_DEVELOPMENT_CONTAINER_ENGINE = engine;
   fixture.env.OCC_DEVELOPMENT_KUBERNETES_CLUSTER = "occ-dev-owned";
   fixture.env.OCC_DEVELOPMENT_COMPOSE_PROJECT = "owned-kubernetes";
   fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY = join(fixture.directory, "kubernetes state");
@@ -458,7 +462,7 @@ async function prepareLifecycleCommands(fixture, scenario = "success") {
     fixture.env.DEV_UP_RESOURCE_STATE,
     JSON.stringify({ clusters: ["occ-dev-unrelated"], compose: false }),
   );
-  for (const command of ["docker", "k3d", "kubectl", "helm"]) {
+  for (const command of [engine, "k3d", "kubectl", "helm"]) {
     await writeExecutable(
       join(bin, command),
       `#!${nodeExecutable}
@@ -466,6 +470,7 @@ const fs = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 const command = ${JSON.stringify(command)};
+const engine = ${JSON.stringify(engine)};
 const scenario = process.env.DEV_UP_LIFECYCLE_SCENARIO;
 const statePath = process.env.DEV_UP_RESOURCE_STATE;
 const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
@@ -473,18 +478,43 @@ function save() { fs.writeFileSync(statePath, JSON.stringify(state)); }
 function output(value) { process.stdout.write(value + "\\n"); }
 function fail(message) { process.stderr.write(message + "\\n"); process.exit(77); }
 fs.appendFileSync(process.env.SAFETY_LOG, JSON.stringify({ command, args, dockerHost: process.env.DOCKER_HOST || "", dockerContext: process.env.DOCKER_CONTEXT || "" }) + "\\n");
-if (command === "docker") {
+// Podman records an unqualified local name under the \`localhost\` registry;
+// Docker keeps it as written. A name whose first component already names a
+// registry is left alone by both engines.
+function recordedTag(name) {
+  if (engine !== "podman") return name;
+  const first = name.split("/")[0];
+  // Only a first component before a slash can name a registry; a bare
+  // \`name:tag\` carries its tag there and is still unqualified.
+  const qualified = name.includes("/") && (first === "localhost" || first.includes(".") || first.includes(":"));
+  return qualified ? name : "localhost/" + name;
+}
+// containerd stores whatever reference was imported, so the node inventory
+// reflects the same qualification the engine applied.
+function importedTag(name) {
+  if (engine === "podman") return recordedTag(name);
+  return name.includes("/") ? "docker.io/" + name : "docker.io/library/" + name;
+}
+if (command === engine) {
   if (args[0] === "version" || (args[0] === "compose" && (args.includes("config") || args[1] === "version"))) {
-    const result = spawnSync(${JSON.stringify(join(bin, "docker-config"))}, args, { env: process.env, stdio: "inherit" });
+    const result = spawnSync(${JSON.stringify(join(bin, `${engine}-config`))}, args, { env: process.env, stdio: "inherit" });
     process.exit(result.status ?? 1);
   }
   if (args[0] === "context" && args[1] === "show") output("fixture-context");
   else if (args[0] === "context" && args[1] === "inspect") output(JSON.stringify([{ Endpoints: { docker: { Host: "unix:///fixture/owned-docker.sock" } } }]));
+  else if (args[0] === "info" && args.includes("{{.Host.RemoteSocket.Path}}")) output("/fixture/owned-podman.sock");
+  // Kubernetes endpoint discovery reads the whole inventory; a local service
+  // reports the host socket directly.
+  else if (engine === "podman" && args[0] === "info" && args.includes("json")) output(JSON.stringify({ host: { serviceIsRemote: false, remoteSocket: { path: "unix:///fixture/owned-podman.sock", exists: true } } }));
   else if (args[0] === "info") output("/var/lib/docker");
+  else if (args[0] === "network" && args[1] === "inspect" && args[2] === "k3d-occ-dev-owned") {
+    output(JSON.stringify([{ Name: "k3d-occ-dev-owned", IPAM: { Config: [{ Subnet: "fd00:42::/64" }, { Subnet: "172.30.42.0/24", Gateway: "172.30.42.1" }] } }]));
+  }
   else if (args[0] === "network" && args[1] === "inspect") {
     if (!state.compose) process.exit(1);
     output(JSON.stringify([{ IPAM: { Config: [{ Subnet: "172.30.41.0/24" }] } }]));
   }
+  else if (args[0] === "image" && args[1] === "inspect" && args.includes("{{json .RepoTags}}")) output(JSON.stringify([recordedTag(args.at(-1))]));
   else if (args[0] === "image" && args[1] === "inspect" && args.includes("--format")) output("linux/amd64");
   else if (args[0] === "image" && args[1] === "save") fs.writeFileSync(args[args.indexOf("--output") + 1], "fixture image archive\\n");
   else if (args[0] === "image" && args[1] === "inspect" && args[2] === "openclaw-enterprise-controller:kubernetes-quickstart" && process.env.DEV_UP_EXISTING_CONTROLLER_IMAGE === "1") {}
@@ -495,15 +525,22 @@ if (command === "docker") {
     if (args.includes("{{.State.Status}}")) output("exited");
     else if (args.includes("{{.State.ExitCode}}")) output("0");
     else fail("unexpected inspect: " + args.join(" "));
+  } else if (args[0] === "exec" && args[1].endsWith("-server-0") && args[2] === "nslookup") {
+    // The launcher checks the new node's resolver before any image pull.
+    if (scenario === "node-dns-refused") fail(";; connection timed out; no servers could be reached\\nnslookup: write to '172.30.42.1': Connection refused");
+    output("Name:\\tregistry-1.docker.io\\nAddress: 192.0.2.10");
+  } else if (args[0] === "exec" && args[1].endsWith("-server-0") && args.slice(2, 5).join(" ") === "ip route get") {
+    // The k3d API server reaches local Pods over the node's cni0 bridge.
+    output(args[5] + " dev cni0 src 10.42.0.1 uid 0\\n    cache");
   } else if (args[0] === "exec" && args.includes("images")) {
     if (args.includes("list")) output([
-      "docker.io/library/openclaw-enterprise-runtime:kubernetes-quickstart application/vnd.oci.image.manifest.v1+json sha256:" + "a".repeat(64),
-      "docker.io/library/openclaw-enterprise-controller:kubernetes-quickstart application/vnd.oci.image.manifest.v1+json sha256:" + "b".repeat(64),
-      "docker.io/openclaw-development/import-b9b4e5950649:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:" + "c".repeat(64),
-      "docker.io/openclaw-development/openshell-gateway:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39",
-      "docker.io/openclaw-development/openshell-sandbox:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:3d8723843b0e72b43aa42acc73db22b0f1c3fbbc7871bcac9ac711c8c213ba65",
-      "docker.io/openclaw-development/openshell-supervisor:occ-dev-owned application/vnd.oci.image.manifest.v1+json sha256:cda950db60c83a770c54bfeea5326de8a3345c100938cc843b4537ab67a4e62f",
-    ].join("\\n"));
+      ["openclaw-enterprise-runtime:kubernetes-quickstart", "a".repeat(64)],
+      ["openclaw-enterprise-controller:kubernetes-quickstart", "b".repeat(64)],
+      ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
+      ["openclaw-development/openshell-gateway:occ-dev-owned", "17b2f65d1e33f32a419ecc98dd42389b0227280be54139c14834933ec29420ea"],
+      ["openclaw-development/openshell-sandbox:occ-dev-owned", "b46ed57b080946d0fe80490dbe1441ebf4a83c6eec79369ddbcfc49ec19dc0cf"],
+      ["openclaw-development/openshell-supervisor:occ-dev-owned", "971d71f45f677a7b1084385322bae4ac6fd09e9450e680684ab79a04d07c5c9f"],
+    ].map(([name, digest]) => importedTag(name) + " application/vnd.oci.image.manifest.v1+json sha256:" + digest).join("\\n"));
   } else if (args[0] === "cp") {
     fs.writeFileSync(args.at(-1), JSON.stringify({ data: { id: "key_fixture", key: ${JSON.stringify(serviceKey)} }, meta: { installationId: ${JSON.stringify(matchingInstallationId)} } }));
   } else if (args[0] === "compose") {
@@ -515,7 +552,7 @@ if (command === "docker") {
       state.compose = false; save();
     } else if (args.includes("ps")) output(args.at(-1) + "-container-id");
     else if (!args.includes("exec") && !args.includes("logs") && !args.includes("stop")) fail("unexpected compose: " + args.join(" "));
-  } else fail("unexpected docker: " + args.join(" "));
+  } else fail("unexpected " + engine + ": " + args.join(" "));
 } else if (command === "k3d") {
   if (args[0] === "cluster" && args[1] === "list") output(JSON.stringify(state.clusters.map(name => ({ name }))));
   else if (args[0] === "cluster" && args[1] === "create") {
@@ -534,16 +571,18 @@ if (command === "docker") {
 } else if (command === "kubectl") {
   if (args.includes("get") && args.includes("--raw=/version")) {}
   else if (args[0] === "apply" || args[0] === "rollout" || args[0] === "create" || args[0] === "patch") {}
+  else if (args[0] === "get" && args[1] === "node" && args[2].endsWith("-server-0")) output(JSON.stringify({ spec: { podCIDR: "10.42.0.0/24" } }));
   else if (args[0] === "get" && args[1] === "namespace") output(JSON.stringify({ metadata: { name: args[2] } }));
   else if (args[0] === "-n" && args.includes("wait")) {}
   else if (args[0] === "-n" && args.includes("rollout")) {}
   else if (args[0] === "-n" && args.includes("delete")) {}
   else if (args[0] === "-n" && args.includes("exec")) output(JSON.stringify({ data: { id: "key_fixture", key: ${JSON.stringify(serviceKey)} }, meta: { installationId: ${JSON.stringify(matchingInstallationId)} } }));
   else if (args[0] === "-n" && args.includes("pod") && args.includes("bootstrap-password-prepare")) output("Succeeded");
-  else if (args[0] === "-n" && args.includes("pod") && args.includes("postgres")) output("10.42.0.20");
+  else if (args[0] === "-n" && args.includes("pod") && args.includes("postgres-0")) output("10.42.0.20");
   else if (args[0] === "-n" && args.includes("endpoints") && args.includes("kubernetes") && args.includes("jsonpath={.subsets[0].ports[0].port}")) output("6443");
-  else if (args[0] === "-n" && args.includes("endpoints") && args.includes("kubernetes")) output("10.43.0.1");
+  else if (args[0] === "-n" && args.includes("endpoints") && args.includes("kubernetes")) output("172.30.42.3");
   else if (args[0] === "get" && args[1] === "service" && args[2] === "kubernetes") output(JSON.stringify({ spec: { clusterIP: "10.43.0.1" } }));
+  else if (args[0] === "get" && args[1] === "service" && args[2] === "openshell-gateway" && args.includes("jsonpath={.spec.clusterIP}")) output("10.43.0.50");
   else if (args[0] === "get" && args[1] === "endpoints" && args[2] === "kubernetes") output(JSON.stringify({ subsets: [{ addresses: [{ ip: "172.30.41.4" }] }] }));
   else if (args[0] === "get" && args[1] === "namespaces") output(JSON.stringify({ items: [{ metadata: { name: "oce-123456789012345", labels: { "openclaw.dev/namespace": "namespace_fixture" }, annotations: { "openclaw.dev/namespace-id": "namespace_fixture" } } }] }));
   else if (args[0] === "get" && args[1] === "service" && args.includes("jsonpath={.spec.ports[0].nodePort}")) output("30051");

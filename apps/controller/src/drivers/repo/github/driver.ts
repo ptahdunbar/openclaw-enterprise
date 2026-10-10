@@ -7,6 +7,7 @@ import type {
   RepoDriver,
   RepositoryCredentialResolution,
   RepositoryCredentialSessionStatus,
+  RepositoryOption,
   RepositoryOptions,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ScopeViolationError } from "@openclaw-enterprise/occ";
@@ -23,6 +24,7 @@ import {
 import { encodeRepositoryCredentialSessionFiles } from "./credentials/client/config.ts";
 import type { SessionStatus } from "../credentials/service-contracts.ts";
 import { sameBinding } from "../credentials/sessions.ts";
+import { hasControlCharacter } from "../credentials/client-contracts.ts";
 
 function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus {
   return Object.freeze({
@@ -34,13 +36,6 @@ function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus 
       repositoryId: status.binding.repositoryId,
       grantId: status.binding.grantId,
     }),
-  });
-}
-
-function hasControlCharacters(value: string): boolean {
-  return [...value].some((character) => {
-    const code = character.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f;
   });
 }
 
@@ -86,7 +81,7 @@ export class GitHubRepoDriver implements RepoDriver {
         typeof path !== "string" ||
         !isAbsolute(path) ||
         resolve(path) !== path ||
-        hasControlCharacters(path) ||
+        hasControlCharacter(path) ||
         (field === "controlSocket" && Buffer.byteLength(path) > 103)
       ) {
         throw new Error("Repository credential Driver paths must be absolute.");
@@ -115,7 +110,7 @@ export class GitHubRepoDriver implements RepoDriver {
       typeof id !== "string" ||
       Buffer.byteLength(id) < 1 ||
       Buffer.byteLength(id) > 512 ||
-      hasControlCharacters(id)
+      hasControlCharacter(id)
     ) {
       throw new Error("The GitHub Backend must declare its repository credential Driver.");
     }
@@ -144,26 +139,24 @@ export class GitHubRepoDriver implements RepoDriver {
     readonly namespaceId: string;
     readonly descriptionRefs?: readonly string[];
   }): Promise<RepositoryOptions> {
-    const options = this.#registry.repositories.flatMap((repository) => {
+    const options: RepositoryOption[] = [];
+    const approved = new Map<string, string>();
+    this.#registry.repositories.forEach((repository) => {
       const policy = repository.namespaces.find(
         (candidate) => candidate.namespaceId === input.namespaceId,
       );
-      return policy === undefined
-        ? []
-        : [
-            Object.freeze({
-              repositoryRef: repository.repositoryRef,
-              displayName: repository.repository,
-              allowedProfiles: Object.freeze([...policy.profiles]),
-            }),
-          ];
+      if (policy === undefined) {
+        return;
+      }
+      options.push(
+        Object.freeze({
+          repositoryRef: repository.repositoryRef,
+          displayName: repository.repository,
+          allowedProfiles: Object.freeze([...policy.profiles]),
+        }),
+      );
+      approved.set(repository.repositoryRef, repository.repositoryId);
     });
-    const approvedRefs = new Set(options.map((option) => option.repositoryRef));
-    const approved = new Map(
-      this.#registry.repositories
-        .filter((repository) => approvedRefs.has(repository.repositoryRef))
-        .map((repository) => [repository.repositoryRef, repository.repositoryId]),
-    );
     const descriptionRefs = (input.descriptionRefs ?? []).filter((ref) => approved.has(ref));
     if (descriptionRefs.length === 0) {
       return Object.freeze({ options: Object.freeze(options), descriptionsPending: false });

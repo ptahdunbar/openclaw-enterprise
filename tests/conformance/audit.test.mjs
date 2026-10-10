@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AuditEventFactory,
   InMemoryAuditSink,
   recordAuthorizationDenial,
   recordMutation,
@@ -160,6 +161,25 @@ test("audit evidence retains Installation identity and rejects another Namespace
       action: "agents.create",
       resource: resource(),
     }),
+    /Audit event and resource scopes must match exactly/,
   );
   assert.equal(sink.events.length, 1);
+});
+
+test("audit event kinds default to their own outcome", () => {
+  const factory = new AuditEventFactory({ clock: () => "2026-09-30T12:00:00.000Z" });
+  const base = {
+    installationId: "installation-a",
+    namespaceId: "namespace-a",
+    actorId: "principal-admin",
+    action: "openclaw.agents.runtime_logs.view",
+    resource: resource(),
+  };
+  assert.deepEqual(
+    ["bootstrap", "mutation", "access", "authorization_denial"].map(
+      (kind) => factory.create({ ...base, kind }).outcome,
+    ),
+    ["success", "success", "success", "denied"],
+  );
+  assert.equal(factory.create({ ...base, kind: "access", outcome: "failure" }).outcome, "failure");
 });

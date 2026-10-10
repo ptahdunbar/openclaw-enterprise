@@ -1,0 +1,3 @@
+2026-09-30T14:58:47.530955411Z {"event":"openclaw.model_probe","elapsedMs":15092,"capMs":65000,"cpuWaitMs":377,"code":"AUTHENTICATION_FAILED"}
+2026-09-30T14:58:47.531088278Z {"event":"runtime.startup_phase","container":"gateway","phase":"model-probe","outcome":"failed","ms":15100,"sinceStartMs":15100}
+2026-09-30T14:58:47.531469929Z Harness model authentication probe failed.

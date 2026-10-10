@@ -30,12 +30,16 @@ namespace must already be `Active`, carry
 security labels, and have the required tenant-local RoleBindings. The worker
 rejects foreign tenant markers and NetworkPolicies before binding its exact
 `openclaw.dev/namespace` Namespace-ID label and `openclaw.dev/namespace-id`
-annotation together with a `resourceVersion`-guarded, non-forced patch;
+annotation (and, in single-cluster Compute, the `openclaw.dev/gateway-namespace`
+label) together with a `resourceVersion`-guarded, non-forced patch;
 concurrent ownership changes cannot overwrite another tenant's claim.
 Additive foreign policies could otherwise defeat default-deny isolation. The
 namespace and its existing manager remain operator-owned;
 persisted uniqueness prevents simultaneous claims, and retained tenant markers
-prevent reassignment until an operator deliberately clears both old markers.
+prevent reassignment until an operator deliberately clears all of the old
+markers: the `openclaw.dev/namespace` label, the `openclaw.dev/namespace-id`
+annotation and, in single-cluster Compute, the `openclaw.dev/gateway-namespace`
+label. A selection that still finds any of them ends `failed`.
 
 Each tenant namespace also receives:
 
@@ -125,7 +129,7 @@ runtime verification. Profile generation and CI use the same reviewed rules;
 host installation remains operator-owned.
 
 The optional profile is for cases where `RuntimeDefault` blocks the
-user-namespace `clone`, `unshare`, `mount`, and `pivot_root` calls used by Codex `0.158.0`
+user-namespace `clone`, `unshare`, `mount`, and `pivot_root` calls used by Codex `0.163.0-alpha.2`
 and bubblewrap. The profile is a syscall compatibility allowlist, not the
 filesystem or network boundary. Codex and bubblewrap continue to own runtime
 filesystem enforcement, and Kubernetes NetworkPolicies plus the configured
@@ -183,27 +187,97 @@ lifecycle hooks, and runtime payload fields cannot supply `RUST_LOG`,
 credentials, or remote destination settings.
 
 The bundled Collector promotes only fixed operational event classes: reviewed OCC
-event names, gateway subsystem records under `gateway`, and Codex app-server
-stderr records under `codex_app_server`. It parses JSON records up to `32KiB`,
+event names, gateway subsystem records under `gateway`, Codex app-server
+stderr records under `codex_app_server`, Codex warnings and errors (never the
+`codex_otel` targets), the Codex `turn` span's start and end (`codex.turn`),
+completed tool calls (`codex.tool_call`), and the runtime wrappers' fixed stderr
+diagnostics (`runtime.startup_phase`, `runtime.workspace_node`,
+`runtime.gateway_settings_overridden`, and `openclaw.model_probe` /
+`codex.model_probe`) with only a bounded phase name or code. It parses JSON records up to `32KiB`,
 maps severity explicitly, keeps allowlisted attributes, and replaces retained
-bodies with the event class, stripping arbitrary content. It drops malformed,
+bodies with the event class, stripping arbitrary content. Codex turn and tool-call
+bodies are fixed text; a `codex.operational` body keeps Codex's own message only
+for `codex_app_server` targets or the fixed `codex_core::responses_retry` retry
+messages, and only when it is short plain text with no quotes, braces, query
+strings, credential words or word over 24 characters. Other Codex errors, which
+can interpolate chat text, keep the event name; other Codex warnings are dropped. It drops malformed,
 oversized, unclassified, unspecified-severity, and Codex stdout protocol records.
 Resource identity comes from protected Docker labels or Kubernetes Pod metadata;
 request, work, Namespace, Agent, and revision IDs remain attributes.
+
+A Gateway startup failure (OpenClaw's `Gateway failed to start:` error, which has
+no subsystem) is promoted as `gateway.startup_failed`; its body keeps the message
+only under the `codex.operational` plain-text rules. Those rules also reject
+messages with an argv credential flag (`-u`, `--password`) or a `user:password`
+pair.
 
 Collector credentials and TLS material live only in Collector-owned deployment
 configuration. In Helm, the bundled Collector uses dedicated config and exporter
 Secrets, read-only `/var/log/pods`, a non-root UID with supplementary group
 `0` for CRI file read access, and restricted Pod and container security
 settings. Its dedicated egress policy permits DNS, the Kubernetes API for
-metadata, and one approved exporter or proxy `/32`. The shared dependency
-egress policy also selects Collector Pods and permits the configured database
-destination; NetworkPolicy permissions are additive. Its file offsets and exporter queue use a
+metadata, and one approved exporter or proxy: a `/32` address or an in-cluster
+namespace and Pod selector, on the exporter port. No chart policy grants the
+Collector database access; the shared dependency egress policy selects only
+the API, worker and initialization Pods. Its file offsets and exporter queue use a
 bounded `emptyDir`; they are best-effort across process or container restart and
 are lost with Pod or node replacement. In Docker development, forwarding is
 nonblocking with finite Engine and container-local buffers. Export outage or
 overflow can lose operational logs but cannot block reconciliation, weaken IAM,
 or change audit persistence.
+
+### Console and API runtime log reads
+
+OCC also offers a second, non-exported read path: the
+[Agent logs](../guides/topics/agent-logs.md) routes fetch one bounded page of
+Kubernetes container output, Pod status and Pod Events on demand. It does not
+change the Collector boundary above; nothing is stored, cached, logged or sent
+to the Collector, and responses carry `Cache-Control: no-store`.
+
+- **Access.** Pod status and Events need Agent `operate` and `read` plus
+  revision `read`. Log text needs Agent `read_logs` or `administer` and Agent
+  `read`, for any revision of that Agent. `administer` is the audience that already reaches Gateway
+  logs through the native admin UI; `read_logs` delegates log text alone and is
+  never granted by bootstrap. A `read_logs` Restriction also blocks
+  `administer`. Every poll is authorized again; a denial is audited and reaches
+  no Driver.
+- **Audit.** OCC writes `openclaw.agents.runtime_logs.view` before the first log
+  read of a view, and `openclaw.agents.runtime_logs.download` before every
+  download, both with audit kind `access`. If that write fails the request returns `503` with no content.
+  A download is the same sanitized page in a text serializer; it needs the
+  same grants and is not stored on the server.
+- **Content.** An allowlist classifier keeps only operational wrapper, Gateway,
+  Codex tracing and short plain-text lines. Codex message text is kept only from
+  reviewed operational targets (app server, login, CA setup, plugin manifests)
+  and reviewed fixed-format messages (model endpoint connection, network proxy
+  startup, retries) whose variable parts are a configured endpoint, a listener
+  address, counts, durations or a connection error (error kind, OS error, HTTP
+  status, proxy or TLS diagnostic). Other structured output, including
+  Codex protocol traffic, payload keys such as `prompt` and `content`, and
+  pretty-printed JSON spread over several lines, is withheld and counted. Retained text passes pattern redaction, which is
+  best-effort. The `content` class has no producer.
+- **Events.** Pod Event reasons and messages reach the `operate` audience after
+  credential redaction. Node names, image references and Secret and ConfigMap
+  names are masked in the standard scheduler and kubelet message shapes; the
+  masking is best-effort, so other Event text can still name cluster objects.
+- **Sandbox source.** OpenShell policy decisions and supervisor tracing use the
+  same tiers and audit. OCC reads them through a client narrowed to the
+  read-only `GetSandboxLogs` RPC (`sandbox:read`), so this path cannot create,
+  delete or exec into a Sandbox. Records are classed `activity`; command lines
+  and URLs are redacted and cut to 1 KiB.
+- **Errors.** Driver and cluster error text never reaches a client; failures map
+  to fixed codes.
+- **Ordering.** The operator switch (`501`) runs before authorization, so a
+  principal without grants learns only whether the feature is on. The
+  per-principal rate limit and the replica's concurrent-read limit apply after
+  authorization: every denial is refused and audited, and only authorized
+  requests spend the caller's request budget.
+- **Cluster access.** The tenant API, Gateway observer and execution tenant API
+  roles gain read-only `pods/log get` and `events get,list` through
+  `agentRuntimeLogs.enabled`. RBAC cannot separate Agents, so OCC reads only
+  Pods carrying the exact Agent and revision labels and re-checks them on every
+  read. Cursors are HMAC-signed with the auth secret and bound to one principal,
+  Agent, revision and source.
 
 ## Related
 

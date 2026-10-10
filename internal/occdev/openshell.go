@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,7 +24,7 @@ import (
 )
 
 const (
-	openShellVersion                = "0.1.0"
+	openShellVersion                = "0.1.3-pre.2"
 	openShellRuntimeClass           = "openshell-sandbox"
 	openShellGatewayService         = "openshell-gateway"
 	openShellGatewayNamespace       = "openshell-system"
@@ -34,12 +35,12 @@ const (
 	openShellBoundaryRoleLabel      = "openshell.ai/boundary-role"
 	openShellSupervisorRole         = "supervisor"
 	openShellNodePort               = 30051
-	openShellSourceSHA256           = "f2f85978af532511b9c6355e2baf3ce91a226e3badecc98578413d0ac7958cd7"
+	openShellSourceSHA256           = "77afc69ad28e55f11a05cbc68d6dc5a6cc5c989a68d0f9d55ae0868af2b3f476"
 	agentSandboxManifestSHA256      = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
 	openShellK3sImage               = "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657"
-	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:496ebba293f5cc2bb2753444dddd534f0b4aeb6a@sha256:9be15b267390fb73353b8862dade4dc13476f13175cf709e174d74bdf5f08e39"
-	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:496ebba293f5cc2bb2753444dddd534f0b4aeb6a@sha256:3d8723843b0e72b43aa42acc73db22b0f1c3fbbc7871bcac9ac711c8c213ba65"
-	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:496ebba293f5cc2bb2753444dddd534f0b4aeb6a@sha256:cda950db60c83a770c54bfeea5326de8a3345c100938cc843b4537ab67a4e62f"
+	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:021400be8af471f8669369e679de3e18cf0bd672@sha256:17b2f65d1e33f32a419ecc98dd42389b0227280be54139c14834933ec29420ea"
+	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:021400be8af471f8669369e679de3e18cf0bd672@sha256:b46ed57b080946d0fe80490dbe1441ebf4a83c6eec79369ddbcfc49ec19dc0cf"
+	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:021400be8af471f8669369e679de3e18cf0bd672@sha256:971d71f45f677a7b1084385322bae4ac6fd09e9450e680684ab79a04d07c5c9f"
 	openShellSourceArchiveURL       = "https://github.com/NVIDIA/OpenShell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
 	agentSandboxManifestURL         = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
@@ -215,6 +216,13 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 			resultErr = errors.Join(resultErr, fmt.Errorf("remove OpenShell %s staging image: %w", component, err))
 		}
 	}()
+	// Use the name the engine recorded for the staging tag. Podman qualifies it
+	// with the `localhost` registry, and containerd stores whatever reference
+	// was imported, so the verification below has to look for that name.
+	recorded, err := r.engineImageReference(ctx, stagingTag)
+	if err != nil {
+		return "", err
+	}
 	platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", source)
 	if err != nil {
 		return "", err
@@ -233,15 +241,16 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if r.engine == "docker" {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
-	saveArgs = append(saveArgs, "--output", archive, stagingTag)
+	saveArgs = append(saveArgs, "--output", archive, recorded)
 	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
 		return "", err
 	}
-	if err := r.run(ctx, "k3d", "image", "import", "--mode", "direct", archive, "-c", state.Cluster); err != nil {
+	if err := r.importArchiveDirect(ctx, archive, state.Cluster); err != nil {
 		return "", err
 	}
 
 	candidates := map[string]struct{}{
+		recorded:                  {},
 		stagingTag:                {},
 		"docker.io/" + stagingTag: {},
 	}
@@ -510,6 +519,28 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 		}
 	}
 	return nil
+}
+
+func (r *runner) openShellGatewayAddress(ctx context.Context, namespace string) (string, error) {
+	data, err := r.output(
+		ctx,
+		"kubectl",
+		"get",
+		"service",
+		openShellGatewayService,
+		"--namespace",
+		namespace,
+		"-o",
+		"jsonpath={.spec.clusterIP}",
+	)
+	if err != nil {
+		return "", fmt.Errorf("resolve OpenShell Gateway address: %w", err)
+	}
+	address := string(data)
+	if net.ParseIP(address) == nil {
+		return "", fmt.Errorf("OpenShell Gateway returned an invalid ClusterIP")
+	}
+	return address, nil
 }
 
 func openShellImageValues(prefix, image string) []string {

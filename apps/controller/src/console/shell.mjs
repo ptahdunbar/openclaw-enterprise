@@ -72,6 +72,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   let namespaceSelect = null;
   let namespaceAdmissionPending = true;
 
+  window.matchMedia("(max-width: 760px)").addEventListener("change", (event) => {
+    if (!event.matches) {
+      drawerControls?.close(false);
+    }
+  });
+
   function externalLinkIcon() {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("class", "external-link-icon");
@@ -338,7 +344,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "div",
         {},
-        element("h1", {}, pages[feature]),
+        element("h1", { tabindex: "-1" }, pages[feature]),
         element("p", { className: "scope" }, scope),
       ),
       element(
@@ -357,7 +363,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
             "section",
             { className: "state-panel namespace-recovery", role: "status" },
             element("h2", {}, "Namespace unavailable"),
-            namespaceSelector("Choose a valid namespace"),
+            namespaceSelector("Choose a valid Namespace"),
           ),
         );
       } else if (feature !== "namespaces") {

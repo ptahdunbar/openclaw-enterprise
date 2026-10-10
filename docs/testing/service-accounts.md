@@ -73,8 +73,24 @@ for the complete setup.
 `tests/integration/occ-api.test.mjs` covers native references, immutable revision
 snapshots, and Namespace-scoped access.
 `tests/conformance/service-account-driver.test.mjs` covers authorized lifecycle,
-transaction-failure compensation, and execution-mode admission. These checks
-do not exercise a live provider or Kubernetes cluster.
+transaction-failure compensation, and execution-mode admission. Against an
+in-memory Admin API, it checks that a create reply naming a disabled account in
+this workspace removes only that account, a lost reply deletes nothing, and a
+retried delete completes. An invalid credential reply revokes only a credential
+it places under the requested account in this workspace.
+`tests/conformance/kubernetes-compute.test.mjs` checks that a failed token Secret
+create deletes only an account-owned Secret with the request's token, and that a
+failed issuance's compensation keeps the Secret a later issuance stored under the
+same name.
+
+Its Backend regression uses built-in fetch and real HTTPS connections against a
+loopback TLS server with a test-owned certificate. An unfinished 429, 503 or
+oversized declared response must release a single-connection pool so the next
+account request completes before a five-second deadline. Fetch, response bodies
+and cancellation are not mocked; the provider replies and credentials are synthetic.
+The test restores the original dispatcher, destroys its pool, closes the server
+and removes the temporary certificate/key directory. It requires `openssl`.
+These checks do not exercise a live provider or Kubernetes cluster.
 
 `tests/integration/postgres-service-account-deletion.test.mjs` uses the
 [PostgreSQL test setup](postgresql.md) to verify deletion rejection before Driver

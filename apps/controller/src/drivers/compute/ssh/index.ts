@@ -27,6 +27,8 @@ import {
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { currentComputeAbortSignal } from "../operation-context.ts";
 import { WORKSPACE_SETUP_RUNTIME } from "../workspace-setup-runtime.ts";
+import { validatePlaintextNativeGateway } from "../native-gateway-transport.ts";
+import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 import { SystemSshCommandExecutor, type SshCommandExecutor } from "./executor.ts";
 
@@ -164,7 +166,17 @@ function usesGatewayPasswordReference(value: unknown): boolean {
 
 function sshGatewayConfigurationDocument(
   configuration: OpenClawConfigurationDocument,
+  validateTransport = true,
 ): OpenClawConfigurationDocument {
+  if (validateTransport) {
+    for (const validate of [validatePlaintextNativeGateway, validateCodexApprovalPolicySetting]) {
+      validate(
+        configuration,
+        (setting, requirement) =>
+          new ConfigurationFailure(`Configuration setting ${setting} ${requirement}.`),
+      );
+    }
+  }
   const gatewayRecord = asRecord(configuration.gateway);
   if (configuration.gateway !== undefined && gatewayRecord === undefined) {
     throw new ConfigurationFailure("SSH native gateway configuration must be an object.");
@@ -434,6 +446,11 @@ export class SshComputeDriver implements ComputeDriver {
     }
   }
 
+  validateGatewaySettings(configuration: Readonly<OpenClawConfigurationDocument>): void {
+    validatePlaintextNativeGateway(configuration);
+    validateCodexApprovalPolicySetting(configuration);
+  }
+
   validateHarnessAuth(harness: RevisionHarnessDescriptor, auth: HarnessAuthSnapshot): void {
     if (auth?.method !== "runtime" || Object.keys(auth).length !== 1) {
       throw new ConfigurationFailure("SSH Compute requires operator-managed runtime credentials.");
@@ -502,6 +519,29 @@ export class SshComputeDriver implements ComputeDriver {
     this.validateRevision(revision);
     await this.lifecycle.beforeWorkloadStop(revision);
     await this.revisionOperation("retire-revision", revision);
+  }
+
+  // Agent deletion calls this after retiring every revision. Retirement keeps the Agent
+  // directory, port, unit file and runtime account; only Agent deletion releases them.
+  async deleteAgentRuntimeCredentials(binding: ComputeAgentBinding): Promise<void> {
+    this.lifecycleStarted = true;
+    const { namespace, agent } = binding;
+    const host = this.host(namespace);
+    identity(agent.id, "Agent ID");
+    identity(agent.servicePrincipalId, "Agent ServicePrincipal ID");
+    if (agent.namespaceId !== namespace.id) {
+      throw new OwnershipFailure("Agent Namespace ownership differs.");
+    }
+    await this.execute(host, {
+      operation: "delete-agent",
+      namespace,
+      revision: {
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        servicePrincipalId: agent.servicePrincipalId,
+      },
+    });
+    this.agents.delete(agent.id);
   }
 
   // Keep workload restrictions separate from the ownership checks used during teardown.
@@ -586,7 +626,13 @@ export class SshComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): Promise<Record<string, unknown>> {
     const namespace = this.validateRevision(revision);
-    const renderedConfiguration = sshGatewayConfigurationDocument(revision.configuration);
+    // Previously admitted TLS revisions still need their original snapshot hash
+    // for verified teardown. Preparation and activation require native HTTP.
+    const teardown = ["verify-revision", "stop-revision", "retire-revision"].includes(operation);
+    const renderedConfiguration = sshGatewayConfigurationDocument(
+      revision.configuration,
+      !teardown,
+    );
     const effectiveRevision = { ...revision, configuration: renderedConfiguration };
     return this.execute(this.host(namespace), {
       operation,

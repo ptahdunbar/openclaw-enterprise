@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { PluginDiscoveryError } from "../../packages/occ/src/index.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const accessToken = "at-discovery-fixture";
 const pluginId = "plugins~discovery-fixture";
@@ -15,6 +16,34 @@ const runtimeHelp = {
   label: "OCE plugin setup",
   url: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
 };
+
+function oauthCredential(isFedramp = false) {
+  const claims = Buffer.from(
+    JSON.stringify({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "account_oauth_fixture",
+        ...(isFedramp ? { chatgpt_account_is_fedramp: true } : {}),
+      },
+    }),
+  ).toString("base64url");
+  return {
+    kind: "oauth",
+    value: JSON.stringify({
+      version: 1,
+      provider: "codex",
+      state: "ready",
+      auth: {
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: "oauth-access-fixture",
+          refresh_token: "oauth-refresh-fixture",
+          account_id: "account_oauth_fixture",
+          id_token: `e30.${claims}.fixture`,
+        },
+      },
+    }),
+  };
+}
 
 // Plugin Service's PluginDirectoryDetailItem and AppBatchRecord wire contracts.
 function plugin(release = {}) {
@@ -150,6 +179,98 @@ for (const q of [undefined, "  ", " linear & docs? "]) {
   });
 }
 
+for (const isFedramp of [false, true]) {
+  test(`hosted OAuth discovery uses its server-owned account for list, search and details (FedRAMP ${isFedramp})`, async (t) => {
+    const requests = [];
+    t.mock.method(globalThis, "fetch", async (url, init) => {
+      // OAuth identity comes from native login state; the PAT whoami route is never called.
+      assert.ok(url.startsWith(catalogUrl));
+      assert.equal(init.headers.Authorization, "Bearer oauth-access-fixture");
+      assert.equal(init.headers["ChatGPT-Account-ID"], "account_oauth_fixture");
+      assert.equal(init.headers["OAI-Product-Sku"], "codex");
+      assert.equal(init.headers["X-OpenAI-Fedramp"], isFedramp ? "true" : undefined);
+      assert.doesNotMatch(JSON.stringify({ url, init }), /oauth-refresh-fixture/);
+      const path = url.slice(catalogUrl.length);
+      requests.push(path);
+      if (path.startsWith("plugins/list?") || path.startsWith("plugins/search?")) {
+        return Response.json({ plugins: [plugin()], pagination: { next_page_token: null } });
+      }
+      if (path === `plugins/${pluginId}?includeDownloadUrls=true`) {
+        return Response.json(plugin());
+      }
+      assert.equal(path, "apps/batch");
+      assert.equal(init.method, "POST");
+      assert.deepEqual(JSON.parse(init.body), {
+        app_ids: ["connector_fixture"],
+        include_tools: true,
+      });
+      return Response.json({ apps: [app("connector_fixture")] });
+    });
+    const driver = new CodexPluginDriver();
+    const credential = oauthCredential(isFedramp);
+    const page = await driver.discoverCatalog({ credential });
+    assert.equal(page.plugins[0].remoteId, pluginId);
+    const search = await driver.discoverCatalog({ credential, q: "hosted tools" });
+    assert.equal(search.plugins[0].remoteId, pluginId);
+    const detail = await driver.getCatalogPlugin({ credential, pluginId });
+    assert.equal(detail.tools[0].id, "connector_fixture/search");
+    assert.equal(detail.available, true);
+    assert.deepEqual(requests, [
+      "plugins/list?scope=GLOBAL&limit=20",
+      "plugins/search?scope=GLOBAL&limit=20&q=hosted+tools",
+      `plugins/${pluginId}?includeDownloadUrls=true`,
+      "apps/batch",
+    ]);
+    assert.doesNotMatch(JSON.stringify({ page, search, detail }), /oauth-(access|refresh)-fixture/);
+  });
+}
+
+test("hosted OAuth discovery rejects handed-off, invalid and conflicting credentials before provider calls", async (t) => {
+  const request = t.mock.method(globalThis, "fetch", async () => {
+    assert.fail("Rejected OAuth credentials must not reach the provider");
+  });
+  const ready = JSON.parse(oauthCredential().value);
+  for (const credential of [
+    { kind: "oauth", value: JSON.stringify({ ...ready, state: "consumed" }) },
+    { kind: "oauth", value: "invalid native login state" },
+    {
+      kind: "oauth",
+      value: JSON.stringify({
+        ...ready,
+        auth: { ...ready.auth, tokens: { ...ready.auth.tokens, account_id: "different_account" } },
+      }),
+    },
+  ]) {
+    const driver = new CodexPluginDriver();
+    await assert.rejects(driver.discoverCatalog({ credential }), {
+      name: "PluginDiscoveryError",
+      reason: "credentials_rejected",
+    });
+    await assert.rejects(driver.getCatalogPlugin({ credential, pluginId }), {
+      name: "PluginDiscoveryError",
+      reason: "credentials_rejected",
+    });
+  }
+  await assert.rejects(
+    new CodexPluginDriver().discoverCatalog({ accessToken, credential: oauthCredential() }),
+    { name: "PluginDiscoveryError", reason: "credentials_rejected" },
+  );
+  assert.equal(request.mock.callCount(), 0);
+});
+
+test("hosted OAuth discovery rejects provider metadata that echoes its bearer credential", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      plugins: [plugin({ display_name: "Private oauth-access-fixture" })],
+      pagination: { next_page_token: null },
+    }),
+  );
+  await assert.rejects(new CodexPluginDriver().discoverCatalog({ credential: oauthCredential() }), {
+    name: "PluginDiscoveryError",
+    reason: "invalid_response",
+  });
+});
+
 test("hosted plugin logos prefer valid public HTTPS metadata and omit invalid cosmetic values", async (t) => {
   const primary = "https://images.example/logo.png?signature=fixture&expires=123";
   const fallback = "https://images.example/composer.png";
@@ -167,7 +288,12 @@ test("hosted plugin logos prefer valid public HTTPS metadata and omit invalid co
       "not-a-url",
       "http://images.example/logo.png",
       "data:image/png;base64,aGVsbG8=",
-      "https://user:password@images.example/logo.png",
+      syntheticCredentialUrl({
+        username: "user",
+        password: "password",
+        host: "images.example",
+        pathname: "/logo.png",
+      }),
       "https://user@images.example/logo.png",
       "https://images.example/logo\n.png",
       "https://images.example/logo\u0000.png",
@@ -194,7 +320,12 @@ test("hosted plugin website and legal links preserve safe URLs and omit unsafe m
     undefined,
     "javascript:alert(1)",
     "http://publisher.example/",
-    "https://user:password@publisher.example/",
+    syntheticCredentialUrl({
+      username: "user",
+      password: "password",
+      host: "publisher.example",
+      pathname: "/",
+    }),
     "https://publisher.example/\npolicy",
     `https://publisher.example/${"x".repeat(8192)}`,
   ]) {
@@ -279,16 +410,20 @@ test("hosted plugin detail follows native authored app IDs and removes their MCP
   assert.doesNotMatch(JSON.stringify(detail), /private-artifact|local-alternative/);
 });
 
-test("hosted plugin detail rejects an unmatched MCP despite a cloud executor override", async (t) => {
-  const driver = useService(
-    t,
-    plugin({ mcp_servers: [{ key: "local-only", metadata: { command: "local-tool" } }] }),
-    [app("connector_fixture")],
-  );
-  const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
-  assert.equal(detail.available, false);
-  assert.match(detail.unavailableReason, /components not supported/i);
-  assert.deepEqual(detail.unavailableHelp, runtimeHelp);
+test("hosted plugin skills do not admit unmatched MCP servers or scheduled tasks", async (t) => {
+  const release = plugin({ requires_local_executor: true, skills: [{ name: "draft" }] });
+  const driver = useService(t, release, [app("connector_fixture")]);
+  for (const [field, component] of [
+    ["mcp_servers", { key: "local-only", metadata: { command: "local-tool" } }],
+    ["scheduled_tasks", { name: "daily" }],
+  ]) {
+    release.release[field] = [component];
+    const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
+    assert.equal(detail.available, false);
+    assert.match(detail.unavailableReason, /components not supported/i);
+    assert.deepEqual(detail.unavailableHelp, runtimeHelp);
+    release.release[field] = [];
+  }
 });
 
 test("hosted plugin detail admits skills and an MCP route replaced by its hosted app", async (t) => {
@@ -331,7 +466,7 @@ test("hosted plugin detail cannot enable a release with no effective native apps
   assert.equal(detail.tools, null);
   assert.equal(
     detail.unavailableReason,
-    "This plugin has no concrete hosted app supported by OCE.",
+    "This plugin has no concrete hosted app or skills supported by OCE.",
   );
   assert.deepEqual(detail.unavailableHelp, runtimeHelp);
 });

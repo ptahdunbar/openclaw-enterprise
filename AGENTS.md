@@ -13,9 +13,6 @@ authorize every exact resource operation through the selected IAM Driver, and
 emit attributable audit evidence for bootstrap, successful mutations, and
 authorization denials.
 
-Preserve Git history, registered worktrees, ignored local `.env` files, and
-existing root or nested `node_modules/` directories.
-
 The authoritative architecture is the repository's
 [platform design](docs/design.md).
 Read its [implementation status](docs/design.md#implementation-status) before
@@ -38,6 +35,12 @@ and filter by author before making changes; ask if unclear.
 Keep other authors' PRs, branches, and worktrees read-only unless explicitly
 assigned. Repository permissions and dependencies do not expand scope.
 Subagents inherit these limits.
+
+Maintainers retain their review, merge, and approved bypass permissions.
+When assigned to update an existing PR, preserve its head repository and branch.
+Follow the [PR workflow](CONTRIBUTING.md#prepare-a-pull-request);
+verify repository URLs and ownership rather than inferring them from remote names.
+Preserve existing remotes.
 
 "Refresh against main" does not authorize force pushes. Preserve published
 history by default. Rewrite history only with explicit authorization for the
@@ -118,6 +121,14 @@ Use [local-dev](.agents/skills/local-dev/SKILL.md) for repository development
 changes. It requires creating or updating a source-backed flow doc for non-trivial
 runtime changes and defines when trivial maintenance needs no new flow doc.
 Update the existing behavior owner under `docs/flows/` whenever possible.
+Complete its [PR readiness checklist](.agents/skills/local-dev/references/pr-readiness.md)
+before handoff. Default image-version changes must pass its
+[image verification workflow](.agents/skills/local-dev/references/image-version-verification.md)
+before merging; track the authorized publication from main separately.
+
+Use [spec](.agents/skills/spec/SKILL.md) to draft or update RFCs and implementation
+plans. Its `rfc` and `plan` commands follow the
+[specification process](docs/contributing/specifications.md).
 
 Use [test-audit](.agents/skills/test-audit/SKILL.md) when authoring or reviewing
 tests, and [enterprise-testing](.agents/skills/enterprise-testing/SKILL.md) to
@@ -131,7 +142,7 @@ PR. It provides a shared template and distinguishes implemented from pending pat
 When the user or owning workflow requests an independent code review, use
 [autoreview](.agents/skills/autoreview/SKILL.md). Follow the
 [Enterprise review guide](docs/testing/autoreview.md) for usage and upstream sync.
-Keep the vendored skill unchanged; shared fixes belong in `openclaw/agent-skills`.
+Keep only the shared-skill entrypoint here; shared fixes belong in `openclaw/agent-skills`.
 See [Developer skills](docs/testing/developer-skills.md) for provenance and updates.
 
 ## Product terminology
@@ -174,8 +185,10 @@ Use the [documentation map](docs/README.md) and keep these ownership boundaries:
 - Use short Title Case sidebar labels and descriptive sentence-case article
   titles. Use nested groups when they clarify the reader's task; give menus a
   useful overview and list prerequisite steps before actions that need them.
-- Top-level `specs/` records implementation proposals, milestones, and delivery
-  history. Completed specifications do not override current feature reference.
+- `specs/rfcs/` records architectural proposals and decisions. `specs/plans/`
+  holds all implementation plans and historical delivery records. Plans link
+  relevant RFCs through `rfc` frontmatter. Completed specifications do not
+  override current feature reference.
 
 Keep `docs/design.md` and its chapters about system structure, ownership,
 trust boundaries, and major interactions; update them for architectural changes
@@ -246,6 +259,8 @@ an ordinary document does not exempt that document.
 Use [technical-writing](.agents/skills/technical-writing/SKILL.md) when creating,
 editing, or reviewing documentation and specifications. It bundles the relevant
 writing guidance locally; no personal skill installation is required.
+Follow its [page-scope guidance](.agents/skills/technical-writing/SKILL.md#choose-the-smallest-useful-page)
+to keep main guides focused and route edge-case diagnostics to troubleshooting.
 
 - Give each fact one owning page: concepts define terms, references define
   behavior, guides give procedures, and flows explain implementation. Other pages
@@ -270,8 +285,23 @@ boundaries or intentional architecture as temporary.
 
 ## Implementation specifications
 
-Write implementation and milestone specifications under `specs/`, following the
-authoritative platform design.
+Follow the [specification process](docs/contributing/specifications.md) for
+document choice, numbering, status, and preservation. Write architectural RFCs
+under `specs/rfcs/` and all implementation plans directly under `specs/plans/`.
+Link a relevant RFC through the plan's `rfc` frontmatter field, using a path
+relative to the plan file. Preserve RFC-linked and independent task numbering.
+Use one Markdown file by default. When companions are needed, use
+`<number>-<topic>/index.md` for the main document and keep supporting
+files in that folder, without a separate top-level Markdown file.
+A larger feature with an RFC needs a separate implementation plan;
+an independent plan can build on the existing architecture without a new RFC.
+Keep verification in the owning document or its supporting pages, not a separate
+reports area. Keep completed and superseded records in place.
+
+RFC entry points require `status` and the original PR author's GitHub login in
+`author` YAML frontmatter. Companion notes link to
+their parent through `rfc` frontmatter instead of duplicating its decision
+status. Follow the specification process for historical status uncertainty.
 
 Implementation specifications are point-in-time records. When a later spec
 changes or supersedes an implementation described by an earlier spec, document
@@ -279,8 +309,12 @@ the change in the later spec and the affected current documentation. Do not
 retroactively update the earlier spec to match the later implementation;
 preserve its original design decisions and implementation details.
 
-Use stable feature names in `docs/reference/` and retain existing numbered
-implementation-spec paths under `specs/`. A behavior-changing implementation PR
+Use stable feature names in `docs/reference/` and preserve grandfathered
+plan names when grouping companions under `index.md`. RFCs require unique numeric
+IDs of at least four digits; keep the old-to-new lookup current when renumbering.
+This first organization phase preserves `specs/.archive/` content and placement;
+only the removed console-image links change to a preserved Git revision. Do not
+add new records to it. A behavior-changing implementation PR
 updates its affected reference, guides, and flows together. Record completion
 and the owning current reference when a specification ships.
 Keep Manual Notes unchanged. Link maintenance after document moves is permitted
@@ -304,6 +338,8 @@ adapter may mirror a constraint when it substitutes for the database.
 Tests must verify real, supported application behavior. A test that merely
 confirms behavior invented by its own mock, monkeypatch, fixture, or hand-written
 adapter is invalid and must be rewritten or deleted.
+
+Use `tests/fixtures/synthetic-credential-url.mjs` to construct synthetic credential-bearing URLs at runtime; do not commit complete credential-bearing URL literals, which TruffleHog treats as secrets.
 
 - Use actual API routes, request methods, server-owned resource scope, response
   envelopes, authorization rules, and lifecycle transitions. Never invent
@@ -378,6 +414,10 @@ cutover, and allowed/denied NetworkPolicy checks. Configure API egress for its
 actual translated `/32` endpoint and port. The fixture suite's scoped RBAC does
 not verify shared-cluster admission guardrails.
 
+## Browser automation
+
+On a devbox without an X server, run Playwright with `headless: true`.
+
 ## Console Storybook
 
 UI changes require reviewable visual evidence, not just passing checks.
@@ -397,14 +437,13 @@ controls:
   behavior; do not invent additional acceptance criteria.
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
-  Media uploads are optional and are not a merge prerequisite. If media is
-  uploaded, use native GitHub attachments in the PR's Verification section.
+  Upload screenshots and a short video as native GitHub attachments in the
+  PR's Verification section. Both are required before merging UI changes.
 - Include the screenshots, video, and Storybook story names or links in the task
-  conversation. Include the story names or links and any uploaded media in the
+  conversation. Include the story names or links and uploaded media in the
   PR's Verification section. Embed media where supported; otherwise provide
   direct, reviewer-accessible links with captions. A local path or a claim that
-  evidence exists is not a usable PR attachment. If media is not uploaded, state
-  that in the PR; this does not prohibit merging or require a waiver.
+  evidence exists is not a usable PR attachment.
   When no PR exists yet, deliver the evidence in the conversation and carry the
   verification details into the PR when opened.
 - Identify the tested revision and environment, what the evidence demonstrates,
@@ -414,8 +453,10 @@ controls:
   the real supported workflow and report its actual outcome.
 - Check that the media opens and shows the final UI. Refresh evidence after
   material UI changes and exclude credentials, tokens, and private data. If
-  recording or runtime proof is blocked, state the missing evidence and blocker
-  in both places; do not claim the requested verification is complete.
+  recording, upload, or runtime proof is blocked, state the missing evidence and
+  blocker in both places; do not claim the requested verification is complete.
+  Missing uploads or media that no longer shows the final UI block merging,
+  even when CI passes.
 
 ## TypeScript style and verification
 

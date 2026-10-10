@@ -46,9 +46,12 @@ graph TD
 `apps/controller/src/console/agents/access.mjs:renderAgentAccess`
 
 Agent detail mounts sharing independently of revision/configuration reads and
-native admission. The panel reads the selected Namespace's existing `/iam/roles`
-and `/iam/access-bindings` endpoints. A policy `403` leaves the other panels
-usable; a current `401` retains global session expiry.
+native admission, but not when the console's observability probe already showed
+the person lacks Installation administration: the policy endpoints require it and
+the API audits each denial. The panel reads the selected Namespace's existing
+`/iam/roles` and `/iam/access-bindings` endpoints. A policy `403` hides the
+sharing panel and leaves the other panels usable; a current `401` retains global
+session expiry.
 
 ### 2. Serialize Role and binding writes
 
@@ -57,7 +60,9 @@ usable; a current `401` retains global session expiry.
 Submission rereads policy, finds or creates an immutable Role by exact Namespace
 and permissions, then binds Namespace read to the exact Namespace. Only after
 that response does it find or create the exact Agent read/administer Role and
-bind it to the selected Agent. The server validates the supplied subject and
+bind it to the selected Agent. The panel rejects a subject that is not a `prn_`
+Principal ID, such as an email, before any request, and reports a `404` during a
+share as an unknown Principal ID. The server validates the supplied subject and
 resource on each write. Confirmed progress survives later failure; unknown
 results disable mutations until an explicit current-policy refresh. Readback is
 configuration evidence, not a historical receipt, and never triggers a write.
@@ -72,8 +77,8 @@ The panel retains discovery grants and explains other possible access sources.
 
 ## Debugging and Verification
 
-- A `403` on the policy reads affects only the sharing panel; check Installation
-  administration before treating it as a console fault.
+- A `403` on the policy reads hides only the sharing panel; check Installation
+  administration before treating a missing panel as a console fault.
 - After an uncertain write, select **Refresh sharing** and inspect the direct
   grants before submitting again. A present binding does not prove an earlier
   request's outcome.

@@ -16,6 +16,8 @@ Enterprise, start with [Concepts](../concepts.md) or
   the model and authenticates to it.
 - [Workspace files](workspace-files.md): edit an active Agent's instruction and
   identity files.
+- [Runtime logs](agent-logs.md): read Pod status, restarts, Events and redacted
+  container output for a deployed version.
 - [Console walkthrough](../console/agent-details.md): understand each Agent detail
   control, status, and editing surface.
 - [Troubleshoot](agent-troubleshoot.md): follow a failed deployment, check model

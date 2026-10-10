@@ -1,0 +1,292 @@
+{
+  "input": 14,
+  "withheld": 0,
+  "records": [
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:13.065000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:DISCOVERY [INFO] Server returned no policy; attempting local discovery",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:DISCOVERY",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:13.078000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:VALIDATED [INFO] Validated 'sandbox' user exists in image",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:VALIDATED",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:13.090000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:LOADED [INFO] Policy reloaded successfully [policy_hash:0cc0c2b525573c07]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:LOADED",
+        "source": "gateway"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:13.101000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "NET:LISTEN [INFO] 10.200.0.1:3128",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:LISTEN",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:14.002000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "PROC:LAUNCH [INFO] sleep(49)",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "PROC:LAUNCH",
+        "binary": "sleep",
+        "pid": "49",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:32.118000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "NET:OPEN [INFO] ALLOWED /usr/bin/curl(58) -> api.github.com:443 [policy:github_api engine:opa]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:OPEN",
+        "action": "ALLOWED",
+        "binary": "/usr/bin/curl",
+        "pid": "58",
+        "dst_host": "api.github.com",
+        "dst_port": "443",
+        "rule_name": "github_api",
+        "rule_type": "opa",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:32.190000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "HTTP:GET [INFO] ALLOWED GET http://api.github.com/zen [policy:github_api engine:opa]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "HTTP:GET",
+        "action": "ALLOWED",
+        "method": "GET",
+        "url": "http://api.github.com/zen",
+        "rule_name": "github_api",
+        "rule_type": "opa",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:32.200000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "HTTP:GET [INFO] ALLOWED curl(68) -> GET http://172.20.0.1:9876/test [policy:allow_host_9876 engine:mechanistic]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "HTTP:GET",
+        "action": "ALLOWED",
+        "binary": "curl",
+        "pid": "68",
+        "method": "GET",
+        "url": "http://172.20.0.1:9876/test",
+        "rule_name": "allow_host_9876",
+        "rule_type": "mechanistic",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:32.690000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "warn",
+      "message": "NET:OPEN [MED] DENIED /usr/bin/curl(64) -> httpbin.org:443 [policy:- engine:opa] [reason:no matching policy]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:OPEN",
+        "action": "DENIED",
+        "binary": "/usr/bin/curl",
+        "pid": "64",
+        "dst_host": "httpbin.org",
+        "dst_port": "443",
+        "rule_name": "-",
+        "rule_type": "opa",
+        "reason": "no matching policy",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:33.012000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "warn",
+      "message": "NET:OPEN [MED] DENIED /usr/bin/curl(1618) -> 169.254.169.254:80 [policy:- engine:ssrf] [reason:resolves to always-blocked address]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:OPEN",
+        "action": "DENIED",
+        "binary": "/usr/bin/curl",
+        "pid": "1618",
+        "dst_host": "169.254.169.254",
+        "dst_port": "80",
+        "rule_name": "-",
+        "rule_type": "ssrf",
+        "reason": "resolves to always-blocked address",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:33.500000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "warn",
+      "message": "HTTP:POST [MED] DENIED POST http://api.github.com/user/repos [policy:github_api engine:opa]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "HTTP:POST",
+        "action": "DENIED",
+        "method": "POST",
+        "url": "http://api.github.com/user/repos",
+        "rule_name": "github_api",
+        "rule_type": "opa",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:34.001000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "warn",
+      "message": "NET:REFUSE [MED] DENIED node(1234) -> 93.184.216.34:443/tcp [policy:bypass-detect engine:nftables]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "NET:REFUSE",
+        "action": "DENIED",
+        "binary": "node",
+        "pid": "1234",
+        "dst_host": "93.184.216.34",
+        "dst_port": "443",
+        "rule_name": "bypass-detect",
+        "rule_type": "nftables",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:34.300000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "CONFIG:DETECTED [INFO] Settings poll: config change detected [old_revision:2915564174587774909 new_revision:11008534403127604466 policy_changed:true]",
+      "subsystem": "ocsf",
+      "fields": {
+        "activity": "CONFIG:DETECTED",
+        "source": "sandbox"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-04-01T04:04:34.500000000Z",
+      "stream": {
+        "source": "sandbox",
+        "sandbox": "sb-0123456789abcdef"
+      },
+      "contentClass": "activity",
+      "kind": "sandbox",
+      "level": "info",
+      "message": "Isolation boundary attached",
+      "subsystem": "openshell_supervisor",
+      "fields": {
+        "source": "sandbox"
+      }
+    }
+  ]
+}

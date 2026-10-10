@@ -22,10 +22,8 @@ import {
 } from "@openclaw-enterprise/occ";
 import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
-import {
-  currentComputeAbortSignal,
-  withComputeAbortSignal,
-} from "../../compute/operation-context.ts";
+import { OAUTH_PHASE_ANNOTATION } from "../../kubernetes/oauth-seal.ts";
+import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
   createKubernetesAuthenticationOptionsSchema,
   validateKubernetesAuthentication,
@@ -53,8 +51,6 @@ const MANAGER = "openclaw-enterprise";
 const IMPLEMENTATION = "occ/kubernetes-secret";
 const SECRET_KEY = "value";
 const MAX_SECRET_VALUE_BYTES = 65_536;
-const REQUEST_TIMEOUT_MS = 10_000;
-const REQUEST_TIMEOUT_SECONDS = Math.ceil(REQUEST_TIMEOUT_MS / 1000);
 const NAMESPACE_LABEL = "openclaw.dev/namespace";
 const SECRET_LABEL = "openclaw.dev/secret";
 const NAMESPACE_ANNOTATION = "openclaw.dev/namespace-id";
@@ -115,6 +111,28 @@ function validateBackendRef(reference: SecretBackendRef): void {
   required(value.uid, "Secret backend UID");
   if (key !== SECRET_KEY) {
     throw new SecretOwnershipError("Secret backend key is unsupported.");
+  }
+}
+
+function decodedValue(observed: V1Secret): string {
+  const encoded = observed.data?.[SECRET_KEY];
+  try {
+    if (
+      typeof encoded !== "string" ||
+      encoded.length > 4 * Math.ceil(MAX_SECRET_VALUE_BYTES / 3) ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)
+    ) {
+      throw new Error("Invalid encoding.");
+    }
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.toString("base64") !== encoded) {
+      throw new Error("Invalid encoding.");
+    }
+    const value = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    validateValue(value);
+    return value;
+  } catch {
+    throw new SecretBackendUnavailableError("The Kubernetes Secret value is invalid.");
   }
 }
 
@@ -185,32 +203,121 @@ export class KubernetesSecretDriver implements SecretDriver {
     const namespace = await this.readyNamespace(client, identity.namespaceId);
 
     const name = kubernetesSecretName(identity);
-    const observed = await this.request(
-      () =>
-        client.createNamespacedSecret({
-          namespace,
-          body: this.manifest(identity, namespace, name, value),
-        }),
-      "create",
-      { mutating: true },
-    );
+    let observed: V1Secret;
+    try {
+      observed = await this.request(
+        () =>
+          client.createNamespacedSecret({
+            namespace,
+            body: this.manifest(identity, namespace, name, value),
+          }),
+        "create",
+        { mutating: true },
+      );
+    } catch (error) {
+      await this.discardFailedCreate(client, namespace, name, identity);
+      throw error;
+    }
     return this.checkedBackendRef(observed, identity, namespace);
   }
 
-  async update(secret: Secret, value: string): Promise<void> {
-    validateIdentity(secret);
-    validateBackendRef(secret.backendRef);
-    validateValue(value);
-    const client = await this.core();
-    const namespace = await this.readyNamespace(client, secret.namespaceId);
-    if (secret.backendRef.namespaceName !== namespace) {
-      throw new SecretOwnershipError("Secret backend namespace no longer matches placement.");
+  /**
+   * A create that applied but answered with an error (the request deadline, a lost response)
+   * would leave a Secret no OCC metadata names, under a name only this call knows (finding
+   * 916). So a failed create reads its own name and deletes the object it finds, but only when
+   * it carries this exact identity's ownership; an absent object, or one that is not this
+   * Secret's, means the create never applied and its own error stands. When that cannot be
+   * checked, the outcome is reported as unknown and uncleaned. A create still in flight that
+   * lands after this read is not covered.
+   */
+  private async discardFailedCreate(
+    client: CoreV1Api,
+    namespace: string,
+    name: string,
+    identity: SecretIdentity,
+  ): Promise<void> {
+    let existing: V1Secret;
+    let uid: string;
+    try {
+      existing = await this.request(() => client.readNamespacedSecret({ namespace, name }), "read");
+    } catch (error) {
+      if (error instanceof SecretBackendMissingError) {
+        return;
+      }
+      throw this.unknownCreateOutcome();
     }
-    const existing = await this.request(
-      () => client.readNamespacedSecret({ namespace, name: secret.backendRef.name }),
-      "read",
+    try {
+      ({ uid } = this.checkedBackendRef(existing, identity, namespace));
+    } catch {
+      // Someone else's object under this name: nothing of this create's is stored.
+      return;
+    }
+    try {
+      const resourceVersion = existing.metadata?.resourceVersion;
+      if (!isNonEmptyString(resourceVersion)) {
+        throw new SecretOwnershipError("Secret resource version is required for delete.");
+      }
+      await this.request(
+        () =>
+          client.deleteNamespacedSecret({
+            namespace,
+            name,
+            body: { preconditions: { uid, resourceVersion } },
+          }),
+        "delete",
+        { mutating: true },
+      );
+    } catch (error) {
+      if (error instanceof SecretBackendMissingError) {
+        return;
+      }
+      throw this.unknownCreateOutcome();
+    }
+  }
+
+  private unknownCreateOutcome(): Error {
+    return new SecretBackendUnavailableError(
+      "The Kubernetes Secret create outcome is unknown, and its cleanup could not finish.",
     );
-    this.checkedBackendRef(existing, secret, namespace, secret.backendRef);
+  }
+
+  async update(secret: Secret, value: string): Promise<void> {
+    validateValue(value);
+    const { observed } = await this.readOwnedSecret(secret);
+    if (observed.metadata?.annotations?.[OAUTH_PHASE_ANNOTATION] !== undefined) {
+      throw new SecretConflictError("The Agent owns this OAuth credential; it cannot be updated.");
+    }
+    await this.replaceOwnedSecret(secret, observed, value);
+  }
+
+  async compareAndSwap(secret: Secret, expected: string, value: string): Promise<boolean> {
+    validateValue(expected);
+    validateValue(value);
+    const { observed } = await this.readOwnedSecret(secret);
+    if (
+      observed.metadata?.annotations?.[OAUTH_PHASE_ANNOTATION] !== undefined ||
+      decodedValue(observed) !== expected
+    ) {
+      return false;
+    }
+    try {
+      await this.replaceOwnedSecret(secret, observed, value);
+      return true;
+    } catch (error) {
+      if (error instanceof SecretConflictError) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async replaceOwnedSecret(
+    secret: Secret,
+    existing: V1Secret,
+    value: string,
+  ): Promise<void> {
+    const client = await this.core();
+    const namespace = secret.backendRef.namespaceName;
     const desired: V1Secret = {
       apiVersion: "v1",
       kind: "Secret",
@@ -276,30 +383,8 @@ export class KubernetesSecretDriver implements SecretDriver {
   }
 
   async withValue<T>(secret: Secret, use: (value: string) => Promise<T>): Promise<T> {
-    if (secret.driverId !== this.id) {
-      throw new SecretOwnershipError("Secret Driver identity changed.");
-    }
     const { observed } = await this.readOwnedSecret(secret);
-    const encoded = observed.data?.[SECRET_KEY];
-    let value: string;
-    try {
-      if (
-        typeof encoded !== "string" ||
-        encoded.length > 4 * Math.ceil(MAX_SECRET_VALUE_BYTES / 3) ||
-        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)
-      ) {
-        throw new Error("Invalid encoding.");
-      }
-      const bytes = Buffer.from(encoded, "base64");
-      if (bytes.toString("base64") !== encoded) {
-        throw new Error("Invalid encoding.");
-      }
-      value = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-      validateValue(value);
-    } catch {
-      throw new SecretBackendUnavailableError("The Kubernetes Secret value is invalid.");
-    }
-    return use(value);
+    return use(decodedValue(observed));
   }
 
   private async readOwnedSecret(
@@ -307,6 +392,9 @@ export class KubernetesSecretDriver implements SecretDriver {
   ): Promise<{ observed: V1Secret; reference: SecretBackendRef }> {
     validateIdentity(secret);
     validateBackendRef(secret.backendRef);
+    if (secret.driverId !== this.id) {
+      throw new SecretOwnershipError("Secret Driver identity changed.");
+    }
     const client = await this.core();
     const namespace = await this.readyNamespace(client, secret.namespaceId);
     if (secret.backendRef.namespaceName !== namespace) {
@@ -363,7 +451,7 @@ export class KubernetesSecretDriver implements SecretDriver {
     secret: Secret,
     namespace: string,
   ): V1ObjectMeta {
-    if (existing?.resourceVersion === undefined) {
+    if (existing === undefined || !isNonEmptyString(existing.resourceVersion)) {
       throw new SecretOwnershipError("Secret resource version is required for update.");
     }
     return {
@@ -434,34 +522,16 @@ export class KubernetesSecretDriver implements SecretDriver {
     action: string,
     options: { readonly mutating?: boolean } = {},
   ): Promise<T> {
-    const ownerSignal = currentComputeAbortSignal();
-    for (let attempt = 1; ; attempt += 1) {
-      ownerSignal?.throwIfAborted();
-      const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-      const signal =
-        ownerSignal === undefined ? deadline : AbortSignal.any([ownerSignal, deadline]);
-      try {
-        return await withComputeAbortSignal(signal, operation);
-      } catch (error) {
-        if (ownerSignal?.aborted) {
-          throw new SecretBackendUnavailableError(`The Kubernetes Secret ${action} was cancelled.`);
-        }
-        if (deadline.aborted) {
-          throw timeoutFailure(action);
-        }
-        const status = numericErrorStatus(error);
-        const retryable =
-          status === 429 ||
-          (status !== undefined && status >= 500) ||
-          (status === undefined &&
-            !(error instanceof SecretValidationError) &&
-            !(error instanceof SecretOwnershipError));
-        if (!retryable || options.mutating === true || attempt >= 3) {
-          throw sanitizedFailure(error, action);
-        }
-        await new Promise((resolve) => setTimeout(resolve, attempt * 25));
-      }
-    }
+    return kubernetesRequest(
+      operation,
+      {
+        cancelled: () =>
+          new SecretBackendUnavailableError(`The Kubernetes Secret ${action} was cancelled.`),
+        timedOut: () => timeoutFailure(action),
+        failed: (error) => sanitizedFailure(error, action),
+      },
+      options,
+    );
   }
 
   private async core(): Promise<CoreV1Api> {

@@ -1,0 +1,5 @@
+OpenClaw Enterprise is installed as release {{ .Release.Name }} in {{ .Release.Namespace }}.
+{{- with include "openclaw.trustedProxy.notice" . }}
+
+{{ . }}
+{{- end }}

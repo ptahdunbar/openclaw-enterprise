@@ -8,11 +8,7 @@ import {
 } from "../../packages/iam/src/index.ts";
 import { AuthorizationDeniedError, OpenClawController } from "../../packages/occ/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
-const requiresPostgres = {
-  skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
-};
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 function identifier(kind) {
   return `${kind}_${randomUUID()}`;
@@ -313,7 +309,7 @@ test(
       state.transact((unit) =>
         iam.deleteNamespaceRole({ policy: unit.iamPolicy }, namespace.id, secretRole.id),
       ),
-      { name: "ResourceConflictError" },
+      { name: "IAMRoleInUseError" },
     );
     await state.transact(async (unit) => {
       assert.equal(
@@ -430,9 +426,13 @@ test(
           throw error;
         }
       }),
-      { name: "ScopeViolationError" },
+      { name: "IAMPolicyValidationError" },
     );
-    assert.equal(bindingError?.name, "ScopeViolationError", "State must reject the orphan subject");
+    assert.equal(
+      bindingError?.name,
+      "IAMPolicyValidationError",
+      "State must reject the orphan subject",
+    );
     assert.equal(
       (await state.read((unit) => unit.iamPolicy.listAccessBindings(namespace.id))).filter(
         (binding) => binding.subjectId === orphan,
@@ -547,10 +547,26 @@ test(
       createState.transact((unit) =>
         iam.createNamespaceAccessBinding(
           { policy: unit.iamPolicy },
-          { ...agentBinding, id: identifier("binding") },
+          { ...agentBinding, id: identifier("binding"), subjectId: principal.id },
         ),
       ),
-      /target does not belong to the exact Namespace/,
+      /target does not exist in this Namespace or is being deleted/,
+    );
+    // Deletion also removes bindings for the Agent's ServicePrincipal, so a deleting
+    // Agent's ServicePrincipal is no longer a bindable subject for any target.
+    await assert.rejects(
+      createState.transact((unit) =>
+        iam.createNamespaceAccessBinding(
+          { policy: unit.iamPolicy },
+          {
+            ...agentBinding,
+            id: identifier("binding"),
+            resourceKind: "secret",
+            resourceId: secret.id,
+          },
+        ),
+      ),
+      /the ServicePrincipal of a live Agent here/,
     );
 
     assert.equal(
@@ -635,7 +651,7 @@ test(
           },
         ),
       ),
-      { name: "ScopeViolationError" },
+      { name: "IAMPolicyValidationError" },
     );
   },
 );
@@ -787,7 +803,7 @@ test(
         state.transact((unit) =>
           iam.createNamespaceAccessBinding({ policy: unit.iamPolicy }, input),
         ),
-        { name: "ScopeViolationError" },
+        { name: "IAMPolicyValidationError" },
       );
     }
 
@@ -982,7 +998,7 @@ test(
           },
         ),
       ),
-      { name: "ScopeViolationError", message: /support only Namespace read/ },
+      { name: "IAMPolicyValidationError", message: /support only Namespace read/ },
     );
     assert.deepEqual(
       await state.transact((unit) => unit.iamPolicy.listAccessBindings(namespace.id)),
@@ -1220,7 +1236,7 @@ test(
           },
         ),
       ),
-      { name: "ScopeViolationError" },
+      { name: "IAMPolicyValidationError" },
     );
     await assert.rejects(
       state.transact((unit) =>
@@ -1267,7 +1283,7 @@ test(
           },
         ),
       ),
-      { name: "ScopeViolationError" },
+      { name: "IAMPolicyValidationError" },
     );
   },
 );
@@ -1398,14 +1414,15 @@ test(
     );
 
     // Disabling the administrator's account after admission denies the write.
+    const setAdminDisabled = (disabled) =>
+      pool.query(
+        `UPDATE occ.human_authentication_accounts
+         SET disabled = $2, version = version + 1 WHERE user_id = $1`,
+        [admin.userId, disabled],
+      );
     pending = {
       matches: namespaceRead(admin.principalId),
-      run: () =>
-        pool.query(
-          `UPDATE occ.human_authentication_accounts
-           SET disabled = true, version = version + 1 WHERE user_id = $1`,
-          [admin.userId],
-        ),
+      run: () => setAdminDisabled(true),
     };
     const rolesBefore = await roleIds();
     await assert.rejects(
@@ -1414,11 +1431,23 @@ test(
     );
     assert.equal(pending, undefined, "the disable raced the admitted request");
     assert.deepEqual((await roleIds()).sort(), rolesBefore.sort());
-    await pool.query(
-      `UPDATE occ.human_authentication_accounts
-       SET disabled = false, version = version + 1 WHERE user_id = $1`,
-      [admin.userId],
+    await setAdminDisabled(false);
+
+    // ServicePrincipal creation is a policy write too: a disable after admission creates none.
+    pending = {
+      matches: namespaceRead(admin.principalId),
+      run: () => setAdminDisabled(true),
+    };
+    await assert.rejects(
+      controller.createIAMServicePrincipal(admin.principalId, namespace.id),
+      AuthorizationDeniedError,
     );
+    assert.equal(pending, undefined, "the disable raced the admitted ServicePrincipal create");
+    assert.deepEqual(
+      await state.read((unit) => unit.iamPolicy.listServicePrincipals(namespace.id)),
+      [],
+    );
+    await setAdminDisabled(false);
 
     // Inside the transaction, the actor's account and Namespace stay locked until
     // COMMIT: a disable or a policy write in that Namespace cannot slip in.

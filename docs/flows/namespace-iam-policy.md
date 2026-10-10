@@ -1,6 +1,6 @@
 ---
 created: "2026-09-20"
-updated: "2026-09-29"
+updated: 2026-10-07
 last_updated_session: "codex/01a0eb4c-5933-7752-bddc-f787e8da79e7"
 ---
 
@@ -10,7 +10,7 @@ last_updated_session: "codex/01a0eb4c-5933-7752-bddc-f787e8da79e7"
 
 Namespace IAM policy management begins when an authenticated caller uses the OCC
 API or CLI to list, create, read, or delete a Namespace Role or exact
-AccessBinding. OCC authorizes the administrator, validates that the policy entry
+AccessBinding, or to list, create, or read a Namespace ServicePrincipal. OCC authorizes the administrator, validates that the policy entry
 belongs to the requested Namespace, and delegates the policy mutation to the
 selected IAM Driver. The flow stops after the policy and audit event commit
 together in the platform state transaction.
@@ -65,16 +65,28 @@ Installation `administer` check. Role events carry the Namespace as resource and
 carry the bound target as resource (the Namespace for a Namespace binding) and
 `bindingId`, `subjectKind`, `subjectId`, and `roleId` in details. Deletion reads
 the removed Role or AccessBinding in the same transaction to record it.
+ServicePrincipal creation takes an empty body; its event carries the Namespace
+as resource and `servicePrincipalId` in details. The new non-Agent identity is
+fixed to the Namespace, holds no grant until an AccessBinding names it, and is
+listed only in that Namespace. No route deletes it yet; the [service key flow](service-api-keys.md)
+issues and revokes its keys.
 
 ### 3. OCC validates policy ownership
 
 `packages/occ/src/index.ts:createIAMAccessBinding`
 
 Role creation accepts only nonempty, duplicate-free permissions for Namespace
-resource kinds; `namespace` permissions support only `read`. AccessBinding creation accepts identity subjects and exact
+resource kinds; `namespace` permissions support only `read`. `iamRolePermissions`
+also refuses action/kind pairs outside `SUPPORTED_PERMISSION_ACTIONS` (contracts),
+because no operation checks them, and then any `create` Permission, because `create`
+is checked on the Namespace and this API binds only exact resources
+(`NAMESPACE_POLICY_CREATE_REASON`). AccessBinding creation accepts identity subjects and exact
 targets in the same Namespace, including the Namespace itself when the target
 ID matches the path Namespace. OCC verifies the target resource exists and that
 the caller can read it before asking the IAM Driver to create the binding.
+`assertAccessBindingRoleApplies` then refuses, with `400`, a Role that has no
+Permission for the target's kind, or a `create` Permission stored before Role
+creation refused them, because evaluation would drop those grants.
 
 ### 4. The IAM Driver persists or reads policy
 
@@ -83,7 +95,11 @@ the caller can read it before asking the IAM Driver to create the binding.
 The native IAM Driver implements Namespace policy methods against the
 platform-provided policy repository. It rejects missing Roles, cross-Namespace
 targets, unsupported subjects, duplicate IDs, referenced Role deletion, and
-unknown exact bindings without weakening authorization.
+unknown exact bindings without weakening authorization. Invalid Role or
+binding input (an unsupported Permission, or a subject, Role or target not
+usable in the path Namespace) raises `IAMPolicyValidationError`, which HTTP
+maps to `400 INVALID_REQUEST` with the offending field as the detail path.
+Referenced Role deletion raises `IAMRoleInUseError` (`409 RESOURCE_CONFLICT`).
 Existing human Principals can receive bindings without a Namespace service
 identity. ServicePrincipal subjects must belong to that exact Namespace.
 
@@ -109,6 +125,9 @@ Driver. Namespace locking serializes grant creation with Namespace deletion;
 exact resource targets retain their existing deletion locks, and deleting a
 target resource deletes the bindings on it in the same transaction. Identity foreign
 keys protect persisted bindings without expanding application-role privileges.
+Deletion audit projections and Namespace policy removal live in
+`packages/occ/src/iam-policy-cleanup.ts`; callers pass their existing transaction
+unit, so cleanup and its audit retain the same commit boundary.
 Both adapters apply one subject rule on every AccessBinding write: a human
 without a Namespace, a non-Agent ServicePrincipal of the exact Namespace, or the
 ServicePrincipal of a live Agent there. PostgreSQL checks the owning Agent in
@@ -134,8 +153,9 @@ selected account, session, and policy writers join the same protocol.
 - `node --test tests/conformance/postgres-transaction-unknown-commit.test.mjs`
   checks that an unknown commit does not wait for a later rollback query.
 - A `403` means the caller lacks Installation administration, exact Namespace
-  read, or target read for binding creation. A `409` on Role deletion means a
-  binding still references the Role.
+  read, or target read for binding creation. A `400` names the invalid
+  field in its detail path. A `409` on Role deletion means a binding still
+  references the Role.
 
 ## Related docs
 
@@ -149,6 +169,7 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
+- 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)
 - 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)
 - 2026-09-29 05:28: Bind selected native policy reloads to the original State transaction and reject escaped reads. (codex/01a0eb4c-5933-7752-bddc-f787e8da79e7 - 2a191c74c0079e329db130d0a81a1f0f87869bb9)
 - 2026-09-27 19:15: Clarify unknown commit handling and the unregistered authority barrier. (codex/01a0b3bf-83a8-7392-ae2d-1a369b54ab3f - 181b0472f9a5a9d422035edf5121d3a15c200cb5)

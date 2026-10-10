@@ -1,6 +1,7 @@
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import {
+  PERMISSION_ACTIONS,
   RESOURCE_KINDS,
   type AccessBinding,
   type AuthorizationDecision,
@@ -11,6 +12,7 @@ import {
   type IAMDriver,
   type IAMManagedAccessBindingInput,
   type IAMManagedRoleInput,
+  type IAMManagedServicePrincipalInput,
   type IAMPolicyManagementContext,
   type IAMPolicyReadContext,
   type IAMPolicyReadRepository,
@@ -171,7 +173,7 @@ export function createAuthPrincipalSeed(
           })),
       ),
       { action: "operate", resourceKind: "secret" },
-      ...(["create", "read", "delete", "operate"] as const).map((action) => ({
+      ...(["create", "read", "update", "delete", "operate"] as const).map((action) => ({
         action,
         resourceKind: "credential_source" as const,
       })),
@@ -235,15 +237,7 @@ export function validateAuthAccountPrincipalSeed(
   }
 }
 
-const ACTIONS: readonly PermissionAction[] = [
-  "create",
-  "read",
-  "update",
-  "delete",
-  "deploy",
-  "operate",
-  "administer",
-];
+const ACTIONS: readonly PermissionAction[] = PERMISSION_ACTIONS;
 
 const MANAGED_RESOURCE_KINDS: readonly ManagedIAMResourceKind[] = [
   "namespace",
@@ -911,15 +905,27 @@ function effectiveGrants(
   return grants;
 }
 
+/**
+ * Agent `read_logs` admits only runtime log text, which Agent `administer` also admits (the
+ * log route accepts either), so for coverage an `administer` grant stands in for it. This
+ * changes coverage only: authorization still treats the two actions as unrelated. No other
+ * action pair is related this way.
+ */
+function coveringActions(permission: Permission): readonly string[] {
+  return permission.resourceKind === "agent" && permission.action === "read_logs"
+    ? ["read_logs", "administer"]
+    : [permission.action];
+}
+
 function grantCovers(holder: EffectiveGrant, target: EffectiveGrant, permission: Permission) {
+  const actions = coveringActions(permission);
   return (
     (holder.namespaceId === undefined || holder.namespaceId === target.namespaceId) &&
     (holder.resourceKind === undefined ||
       (holder.resourceKind === target.resourceKind && holder.resourceId === target.resourceId)) &&
     holder.permissions.some(
       (candidate) =>
-        candidate.action === permission.action &&
-        candidate.resourceKind === permission.resourceKind,
+        actions.includes(candidate.action) && candidate.resourceKind === permission.resourceKind,
     )
   );
 }
@@ -1157,6 +1163,52 @@ export class NativeIAMDriver implements IAMDriver {
     this.assertNamespace(namespaceId);
     this.assertIdentifier(bindingId, "AccessBinding");
     return repository.deleteAccessBinding(namespaceId, bindingId);
+  }
+
+  async listNamespaceServicePrincipals(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+  ): Promise<readonly Readonly<ServicePrincipal>[]> {
+    const repository = this.policyRepository(context, ["listServicePrincipals"]);
+    this.assertNamespace(namespaceId);
+    return Object.freeze(
+      (await repository.listServicePrincipals(namespaceId)).map((principal) =>
+        Object.freeze({ ...principal }),
+      ),
+    );
+  }
+
+  async getNamespaceServicePrincipal(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+    servicePrincipalId: string,
+  ): Promise<Readonly<ServicePrincipal> | undefined> {
+    const repository = this.policyRepository(context, ["getServicePrincipal"]);
+    this.assertNamespace(namespaceId);
+    this.assertIdentifier(servicePrincipalId, "ServicePrincipal");
+    const principal = await repository.getServicePrincipal(namespaceId, servicePrincipalId);
+    return principal === undefined ? undefined : Object.freeze({ ...principal });
+  }
+
+  /** Creates an automation identity with no grant; bindings and keys are separate steps. */
+  async createNamespaceServicePrincipal(
+    context: IAMPolicyManagementContext,
+    input: IAMManagedServicePrincipalInput,
+  ): Promise<Readonly<ServicePrincipal>> {
+    const repository = this.policyRepository(context, ["createServicePrincipal"]);
+    assertCondition(
+      typeof input === "object" && input !== null && exactKeys(input, ["id", "namespaceId"]),
+      "managed ServicePrincipal input contains unsupported fields",
+    );
+    this.assertIdentifier(input.id, "ServicePrincipal");
+    this.assertNamespace(input.namespaceId);
+    return Object.freeze({
+      ...(await repository.createServicePrincipal({
+        kind: "service_principal",
+        id: input.id,
+        namespaceId: input.namespaceId,
+      })),
+    });
   }
 
   private policyRepository<Repository extends IAMPolicyReadRepository>(

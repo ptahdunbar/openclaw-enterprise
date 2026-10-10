@@ -53,6 +53,7 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 - `harness_auth_secret_id`
 - `harness_auth_service_account_id`
 - `harness_auth_credential_source_id`
+- `credential_sources` (every bound credential source)
 - `active_revision_id`
 - `desired_runtime_state`
 - `status`
@@ -131,6 +132,14 @@ Stores credential sources registered with the selected Credential Gateway; the g
 - `state`
 - `created_at`
 
+### `agent_credential_sources`
+
+Mirrors each Agent draft's `credential_sources` through a trigger, so the database refuses to delete a source an Agent still binds.
+
+- `namespace_id`
+- `agent_id`
+- `credential_source_id`
+
 ### `credential_source_secrets`
 
 Links each credential source secret field to the Namespace Secret that supplied it.
@@ -139,6 +148,21 @@ Links each credential source secret field to the Namespace Secret that supplied 
 - `credential_source_id`
 - `field`
 - `secret_id`
+
+### `credential_withdrawals`
+
+Records one credential source withdrawn from one Agent revision, until the gateway confirms revocation.
+
+- `namespace_id`
+- `agent_id`
+- `revision_id`
+- `credential_source_id`
+- `state`
+- `requested_by`
+- `requested_at`
+- `completed_at`
+- `last_reason`
+- `last_attempt_at`
 
 ### `service_accounts`
 
@@ -272,8 +296,9 @@ Keeps an append-only record of bootstrap, changes to resources, and authorizatio
 
 ### `controller_work`
 
-Queues and tracks controller work for Namespace and Agent lifecycle changes and revision deployments.
+Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and revision deployments.
 
+- `work_kind`
 - `idempotency_key`
 - `namespace_id`
 - `agent_id`
@@ -289,6 +314,27 @@ Queues and tracks controller work for Namespace and Agent lifecycle changes and 
 - `completed_at`
 - `reason_code`
 - `result_data`
+- `created_at`
+- `updated_at`
+
+### `agent_provisioning_work`
+
+Records one Agent provisioning request and its progress. Each row belongs to a
+`controller_work` row with `work_kind = 'provisioning'`. See the
+[Agent provisioning flow](../../flows/agent-provisioning.md).
+
+- `work_id`
+- `namespace_id`
+- `agent_id`
+- `configuration_id`
+- `actor_id`
+- `request_id`
+- `request_fingerprint`
+- `status`
+- `completed_phase`
+- `revision_id`
+- `plan`
+- `progress`
 - `created_at`
 - `updated_at`
 

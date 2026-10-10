@@ -127,6 +127,95 @@ func (r *runner) waitForDevelopmentKubernetesNamespace(ctx context.Context, time
 
 var imageDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
+// engineImageReference reports the name the container engine recorded for a
+// local image.
+//
+// Docker can record a familiar Docker Hub name. Podman qualifies a local
+// build tagged `name:tag` as `localhost/name:tag`. Both `k3d image import`
+// and containerd match the recorded name, so later steps must use it.
+func (r *runner) engineImageReference(ctx context.Context, image string) (string, error) {
+	data, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{json .RepoTags}}", image)
+	if err != nil {
+		return "", err
+	}
+	var tags []string
+	if err := json.Unmarshal(data, &tags); err != nil {
+		return "", fmt.Errorf("invalid tag inventory for image %s: %w", image, err)
+	}
+	// Engines record the implicit tag even when the request omits it. A colon
+	// in a registry port is not a tag; only inspect the final path component.
+	requested := image
+	last := image[strings.LastIndex(image, "/")+1:]
+	if !strings.Contains(image, "@") && !strings.Contains(last, ":") {
+		requested += ":latest"
+	}
+	// Prefer the requested spelling when the image has several tags.
+	for _, tag := range tags {
+		if tag == image {
+			return tag, nil
+		}
+	}
+	for _, tag := range tags {
+		if tag == requested {
+			return tag, nil
+		}
+	}
+	first, _, hasSlash := strings.Cut(image, "/")
+	qualified := hasSlash && (strings.ContainsAny(first, ".:") || first == "localhost")
+	// Docker Hub spells one repository several ways: `postgres`,
+	// `library/postgres`, and `docker.io/library/postgres` all name the same
+	// image. Compare expanded names so any spelling finds the recorded one.
+	requestedHub, requestedOnHub := dockerHubReference(requested)
+	match := ""
+	for _, tag := range tags {
+		matched := false
+		if requestedOnHub {
+			recordedHub, recordedOnHub := dockerHubReference(tag)
+			matched = recordedOnHub && requestedHub == recordedHub
+		}
+		if !matched && !qualified {
+			registry, unqualified, found := strings.Cut(tag, "/")
+			matched = found && (registry == "localhost" || strings.ContainsAny(registry, ".:")) &&
+				(unqualified == image || unqualified == requested)
+		}
+		if !matched {
+			continue
+		}
+		if match != "" && match != tag {
+			return "", fmt.Errorf("container engine records ambiguous tags matching image %s", image)
+		}
+		match = tag
+	}
+	if match != "" {
+		return match, nil
+	}
+	return "", fmt.Errorf("container engine records no tag matching image %s", image)
+}
+
+// dockerHubReference expands Docker Hub's familiar names without changing
+// other registries, tags, or digests. The caller supplies any implicit tag.
+func dockerHubReference(reference string) (string, bool) {
+	if strings.Contains(reference, "@") {
+		return "", false
+	}
+	first, rest, hasSlash := strings.Cut(reference, "/")
+	if !hasSlash {
+		return "docker.io/library/" + reference, true
+	}
+	switch first {
+	case "docker.io", "index.docker.io":
+		if !strings.Contains(rest, "/") {
+			rest = "library/" + rest
+		}
+		return "docker.io/" + rest, true
+	default:
+		if first == "localhost" || strings.ContainsAny(first, ".:") || strings.ToLower(first) != first {
+			return "", false
+		}
+		return "docker.io/" + reference, true
+	}
+}
+
 func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string, error) {
 	image := r.setting("OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart")
 	if r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
@@ -143,9 +232,7 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 
 func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState, image string) (result string, resultErr error) {
 	selected := image
-	staged := false
 	if strings.Contains(image, "@") {
-		staged = true
 		digest := sha256.Sum256([]byte(image))
 		selected = fmt.Sprintf("openclaw-development/import-%x:%s", digest[:6], s.Cluster)
 		if _, err := r.output(ctx, r.engine, "image", "inspect", selected); err == nil {
@@ -160,33 +247,40 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 			}
 		}()
 	}
-	if staged {
-		platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", selected)
-		if err != nil {
-			return "", err
+	// Use the name the engine actually recorded. Podman qualifies an
+	// unqualified local build as `localhost/<name>`, and both k3d and
+	// containerd match that recorded name exactly, so the requested name finds
+	// nothing to import or verify.
+	recorded, err := r.engineImageReference(ctx, selected)
+	if err != nil {
+		return "", err
+	}
+	selected = recorded
+	// Export the selected platform explicitly for every image. Tag-based k3d
+	// imports can report success without registering the built image in the node.
+	platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", selected)
+	if err != nil {
+		return "", err
+	}
+	platform := string(platformData)
+	if !strings.HasPrefix(platform, "linux/") {
+		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
+	}
+	archive := filepath.Join(s.directory, "development-import.tar")
+	defer func() {
+		if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
 		}
-		platform := string(platformData)
-		if !strings.HasPrefix(platform, "linux/") {
-			return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
-		}
-		archive := filepath.Join(s.directory, "development-import.tar")
-		defer func() {
-			if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
-				resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
-			}
-		}()
-		saveArgs := []string{"image", "save"}
-		if r.engine == "docker" {
-			saveArgs = append(saveArgs, "--platform", platform)
-		}
-		saveArgs = append(saveArgs, "--output", archive, selected)
-		if err := r.run(ctx, r.engine, saveArgs...); err != nil {
-			return "", err
-		}
-		if err := r.run(ctx, "k3d", "image", "import", "--mode", "direct", archive, "-c", s.Cluster); err != nil {
-			return "", err
-		}
-	} else if err := r.run(ctx, "k3d", "image", "import", selected, "-c", s.Cluster); err != nil {
+	}()
+	saveArgs := []string{"image", "save"}
+	if r.engine == "docker" {
+		saveArgs = append(saveArgs, "--platform", platform)
+	}
+	saveArgs = append(saveArgs, "--output", archive, selected)
+	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
+		return "", err
+	}
+	if err := r.importArchiveDirect(ctx, archive, s.Cluster); err != nil {
 		return "", err
 	}
 	server := "k3d-" + s.Cluster + "-server-0"
@@ -232,7 +326,11 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 
 // The local profile trusts only Pod loopback; first-agent verifies model access
 // with the separate loopback password. Routed installations supply Envoy source CIDRs.
-func writeInstallation(s *developmentState, reference string, openShell *openShellDevelopmentAssets, codexSeccompProfile string) error {
+// statusProxySource is the API server's Pod proxy source (developmentStatusProxySource).
+func writeInstallation(s *developmentState, reference string, openShell *openShellDevelopmentAssets, openShellGatewayAddress string, codexSeccompProfile string, statusProxySource string) error {
+	if statusProxySource == "" {
+		return fmt.Errorf("the development Installation requires the API server Pod proxy source")
+	}
 	auth := map[string]any{"mode": "kubeconfig", "kubeconfigPath": "/run/openclaw-development/kubeconfig", "context": "k3d-" + s.Cluster}
 	gatewayClientNamespace := "default"
 	if s.DeploymentMode == "k3d" {
@@ -240,6 +338,14 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		gatewayClientNamespace = s.PlatformNamespace
 	}
 	resources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "256Mi"}, "limits": map[string]string{"cpu": "2", "memory": "2Gi"}}
+	// Memory matches the installation profiles (scripts/render-installation-profile.mjs):
+	// requests cover measured use between turns and limits cover measured peaks.
+	// Gateways held 1.2-1.6 GiB and peaked at 2.2 GiB; a dedicated Codex Gateway
+	// with native admin chat was OOM-killed at 2Gi. A Codex Harness held about
+	// 0.5 GiB; running lint, tsc and tests together it was OOM-killed at 2Gi and
+	// reached a 4Gi limit.
+	gatewayResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "1792Mi"}, "limits": map[string]string{"cpu": "2", "memory": "3Gi"}}
+	harnessResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "768Mi"}, "limits": map[string]string{"cpu": "2", "memory": "6Gi"}}
 	config := map[string]any{
 		"occ": map[string]string{"cluster": s.Cluster}, "backend": []any{},
 		"drivers": map[string]any{
@@ -248,8 +354,8 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"secret":        map[string]any{"id": "secret-kubernetes", "configuration": map[string]any{"authentication": auth}},
 			"compute": map[string]any{"id": "compute-kubernetes", "configuration": map[string]any{
 				"authentication": auth, "images": map[string]any{"gateway": reference, "agent": reference, "requireImmutableDigest": true},
-				"resources":                   map[string]any{"gateway": resources, "agent": resources, "namespace": map[string]any{"quota": map[string]string{"pods": "10"}, "containerDefaults": resources}},
-				"network":                     map[string]any{"dns": map[string]any{"namespace": "kube-system", "podLabels": map[string]string{"k8s-app": "kube-dns"}}, "gatewayPort": 8080, "gatewayTrustedProxyCidrs": []string{"127.0.0.1/32"}, "gatewayClients": []any{map[string]any{"namespace": gatewayClientNamespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
+				"resources":                   map[string]any{"gateway": gatewayResources, "agent": harnessResources, "namespace": map[string]any{"quota": map[string]string{"pods": "10"}, "containerDefaults": resources}},
+				"network":                     map[string]any{"dns": map[string]any{"namespace": "kube-system", "podLabels": map[string]string{"k8s-app": "kube-dns"}}, "gatewayPort": 8080, "gatewayTrustedProxyCidrs": []string{"127.0.0.1/32"}, "pluginStatusProxySourceCidrs": []string{statusProxySource}, "gatewayClients": []any{map[string]any{"namespace": gatewayClientNamespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 				"servicePrincipalCredentials": map[string]any{"mode": "projectedServiceAccountToken", "audience": "openclaw-enterprise", "expirationSeconds": 900},
 				"runtime":                     map[string]any{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport", "gatewayNodeSelector": map[string]string{"kubernetes.io/hostname": "k3d-" + s.Cluster + "-server-0"}},
 			}},
@@ -269,10 +375,28 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		if openShell == nil {
 			return fmt.Errorf("OpenShell development assets are required")
 		}
+		if openShellGatewayAddress == "" {
+			return fmt.Errorf("OpenShell Gateway address is required")
+		}
+		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
+		compute["servicePrincipalCredentials"] = map[string]any{"mode": "disabled"}
+		gatewayNamespace := openShellGatewayNamespace
+		if s.DeploymentMode == "k3d" {
+			gatewayNamespace = s.PlatformNamespace
+		}
+		compute["network"].(map[string]any)["providerHarness"] = map[string]any{
+			"namespace": gatewayNamespace,
+			"podLabels": map[string]string{
+				"app.kubernetes.io/name":     "openshell",
+				"app.kubernetes.io/instance": openShellGatewayService,
+			},
+			"address": openShellGatewayAddress,
+			"port":    8080,
+		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources)
 		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
 			"id":            openShellCredentialGatewayID,
-			"configuration": map[string]any{"binaries": []string{openShellCodexBinary}},
+			"configuration": map[string]any{"binaries": openShellCodexBinaries()},
 		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
@@ -286,9 +410,16 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 const (
 	openShellSandboxID           = "sandbox-openshell-development"
 	openShellCredentialGatewayID = "credential-gateway-openshell-development"
-	// The native Codex binary is the only process allowed to use injected model credentials.
-	openShellCodexBinary = "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.158.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex"
 )
+
+// Match the kernel-resolved executable on both architectures of the pinned runtime.
+// The container engine may run remotely, so the launcher's architecture is not authoritative.
+func openShellCodexBinaries() []string {
+	return []string{
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+	}
+}
 
 // openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
 // Credential Gateway Drivers.
@@ -302,8 +433,12 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 		"type": "openshell",
 		// The development gateway is unauthenticated plain HTTP; the profile's NetworkPolicies
 		// admit only the OCE API, worker, and OpenShell supervisors.
-		"configuration": map[string]any{"endpoint": endpoint, "insecureTransport": "network-policy"},
-		"drivers":       map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+		"configuration": map[string]any{
+			"endpoint":          endpoint,
+			"insecureTransport": "network-policy",
+			"requestTimeoutMs":  30000,
+		},
+		"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
 	}
 }
 
@@ -319,6 +454,9 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
+			// OpenShell v0.1.3-pre.2 exposes the route before the canonical
+			// process listens. Keep the first Gateway from consuming it early.
+			"startupDelayMs": 30000,
 			"gateway": map[string]any{
 				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{

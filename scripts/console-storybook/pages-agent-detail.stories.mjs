@@ -1,5 +1,7 @@
 import { story } from "./story.mjs";
 
+export const PluginsOAuthRevision = story("pluginsOAuthRevision");
+
 export default { title: "Pages/Agent detail" };
 
 export const Draft = story("draft");
@@ -37,12 +39,21 @@ export const DeploymentRetrying = story("deploymentRetrying");
 export const DeploymentRunning = story("deploymentRunning");
 export const CurrentVersionDuringDeployment = story("currentVersionDuringDeployment");
 export const DeploymentFailed = story("deploymentFailed");
+export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");
+export const DeploymentModelProbeFailed = story("deploymentModelProbeFailed");
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
 export const DeploymentSucceeded = story("deploymentSucceeded");
 export const DeploymentUnavailable = story("deploymentUnavailable");
 export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsUnknown = story("diagnosticsUnknown");
 export const DiagnosticsUnavailable = story("diagnosticsUnavailable");
+export const RuntimeLogs = story("runtimeLogs");
+export const RuntimeLogsStartupWarnings = story("runtimeLogsStartupWarnings");
+export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
+export const RuntimeLogsDenied = story("runtimeLogsDenied");
+export const RuntimeLogsReaderDownload = story("runtimeLogsReaderDownload");
+export const RuntimeLogsReaderNoPodDownload = story("runtimeLogsReaderNoPodDownload");
+export const RuntimeLogsClusterRbac = story("runtimeLogsClusterRbac");
 export const AgentMissing = { ...story("agentMissing"), name: "Agent unavailable" };
 export const ConfigurationError = {
   ...story("configurationError"),

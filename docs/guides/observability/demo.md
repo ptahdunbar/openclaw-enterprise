@@ -12,7 +12,7 @@ Collector owners must establish equivalent scope. Stop and reconcile uncertain o
 changed scope or ownership. A namespace, kubeconfig or disposable name does not
 prove dedication; demo NetworkPolicy selects Collectors, not records.
 
-From the repository root, use Helm 3, `kubectl`, `yq` v4, Python 3, `openssl`,
+From the repository root, use Helm 3, `kubectl`, `yq` v4, `jq`, Python 3, `openssl`,
 `sha256sum`, `cmp`, an explicit kubeconfig/context and enforcing NetworkPolicy.
 Obtain read access to Helm release Secrets, ConfigMaps and the `kube-system` UID;
 permission to create the demo namespace and OCC Pod-discovery Role/RoleBinding; and
@@ -20,8 +20,10 @@ permission to create the demo namespace and OCC Pod-discovery Role/RoleBinding; 
 
 ## Install private backends
 
-Use OCC release `oce` in `openclaw-system` and demo release `demo` in a new
-`oce-observability-demo` namespace; replace names consistently. Choose `managed`
+Set `OBS_OCC_RELEASE` and `OBS_OCC_NAMESPACE` to your OCC Helm release and
+namespace: production setup uses `oce` in `openclaw-system`; the local development
+launcher uses `openclaw-enterprise` in `oce-system`. The demo uses release `demo`
+in a new `oce-observability-demo` namespace. Choose `managed`
 or `external` Collector mode. Run blocks in order in one Bash session; stop on
 failure. Retain `OBS_FILES` and Helm history through cleanup. Exclude other writers
 of releases, hooks and affected resources. Checks are not locks: stop without
@@ -33,21 +35,23 @@ or renders do not prove chart and hook identity.
 export KUBECONFIG=/absolute/path/to/disposable-kubeconfig
 export HELM_KUBECONTEXT=k3d-your-cluster
 export HELM_DRIVER=secret
+export OBS_OCC_RELEASE=oce OBS_OCC_NAMESPACE=openclaw-system
 export OBS_COLLECTOR_MODE=managed # or external
 umask 077
 OBS_FILES=$(mktemp -d)
 export OBS_FILES
   release_digest() {
-    kubectl --context "$HELM_KUBECONTEXT" -n openclaw-system get secret \
-      "sh.helm.release.v1.oce.v${1:-$revision}" -o json | python3 -c '
-import base64, gzip, hashlib, json, sys
+    kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" get secret \
+      "sh.helm.release.v1.$OBS_OCC_RELEASE.v${1:-$revision}" -o json | python3 -c '
+import base64, gzip, hashlib, json, os, sys
 secret = json.load(sys.stdin)
 encoded = base64.b64decode(secret["data"]["release"], validate=True)
 data = base64.b64decode(encoded, validate=True)
 if data.startswith(b"\x1f\x8b"):
     data = gzip.decompress(data)
 r = json.loads(data)
-if (r.get("name") != "oce" or r.get("namespace") != "openclaw-system"
+if (r.get("name") != os.environ["OBS_OCC_RELEASE"]
+    or r.get("namespace") != os.environ["OBS_OCC_NAMESPACE"]
     or r.get("version") != int(sys.argv[1]) or not r.get("chart", {}).get("metadata")
     or not r.get("manifest")):
     sys.exit("Invalid stored release; stop and inspect it.")
@@ -63,16 +67,16 @@ print(hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).
   kubectl --context "$HELM_KUBECONTEXT" get namespace kube-system \
     -o jsonpath='{.metadata.uid}' > "$OBS_FILES/cluster-uid"
   test -s "$OBS_FILES/cluster-uid"
-  kubectl --context "$HELM_KUBECONTEXT" -n openclaw-system get configmaps \
-    -l owner=helm,name=oce -o json | python3 -c '
+  kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" get configmaps \
+    -l "owner=helm,name=$OBS_OCC_RELEASE" -o json | python3 -c '
 import json, sys
 if json.load(sys.stdin).get("items") != []:
     sys.exit("A ConfigMap release exists; stop and resolve its identity.")
 '
-  helm status oce -n openclaw-system -o json > "$OBS_FILES/occ-status.json"
-  helm history oce -n openclaw-system --max 256 -o json > "$OBS_FILES/occ-history.json"
+  helm status "$OBS_OCC_RELEASE" -n "$OBS_OCC_NAMESPACE" -o json > "$OBS_FILES/occ-status.json"
+  helm history "$OBS_OCC_RELEASE" -n "$OBS_OCC_NAMESPACE" --max 256 -o json > "$OBS_FILES/occ-history.json"
   python3 - "$OBS_FILES" <<'PY_REVISION'
-import json, pathlib, sys
+import json, os, pathlib, sys
 p = pathlib.Path(sys.argv[1])
 s = json.loads((p / "occ-status.json").read_text())
 h = json.loads((p / "occ-history.json").read_text())
@@ -83,7 +87,8 @@ if any(not isinstance(x, dict) or type(x.get("revision")) is not int or x["revis
 revisions = [x["revision"] for x in h]
 deployed = [x for x in h if x.get("status") == "deployed"]
 if (len(set(revisions)) != len(revisions) or len(deployed) != 1
-    or s.get("name") != "oce" or s.get("namespace") != "openclaw-system"
+    or s.get("name") != os.environ["OBS_OCC_RELEASE"]
+    or s.get("namespace") != os.environ["OBS_OCC_NAMESPACE"]
     or s.get("info", {}).get("status") != "deployed"
     or type(s.get("version")) is not int or s["version"] != max(revisions)
     or deployed[0]["revision"] != s["version"]
@@ -93,18 +98,18 @@ if (len(set(revisions)) != len(revisions) or len(deployed) != 1
 (p / "occ-chart").write_text(deployed[0]["chart"] + "\n")
 PY_REVISION
   revision=$(cat "$OBS_FILES/occ-revision")
-  kubectl --context "$HELM_KUBECONTEXT" -n openclaw-system get secret \
-    "sh.helm.release.v1.oce.v$revision" -o jsonpath='{.metadata.uid}' > "$OBS_FILES/occ-release-uid"
+  kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" get secret \
+    "sh.helm.release.v1.$OBS_OCC_RELEASE.v$revision" -o jsonpath='{.metadata.uid}' > "$OBS_FILES/occ-release-uid"
   test -s "$OBS_FILES/occ-release-uid"
   release_digest > "$OBS_FILES/occ-release-digest"
   release_digest "$revision" chart > "$OBS_FILES/occ-chart-digest"
   test -s "$OBS_FILES/occ-release-digest"
   test -s "$OBS_FILES/occ-chart-digest"
-  helm get values oce -n openclaw-system --revision "$revision" --all -o yaml > "$OBS_FILES/occ-before.yaml"
-  helm get manifest oce -n openclaw-system --revision "$revision" > "$OBS_FILES/occ-before-manifest.yaml"
+  helm get values "$OBS_OCC_RELEASE" -n "$OBS_OCC_NAMESPACE" --revision "$revision" --all -o yaml > "$OBS_FILES/occ-before.yaml"
+  helm get manifest "$OBS_OCC_RELEASE" -n "$OBS_OCC_NAMESPACE" --revision "$revision" > "$OBS_FILES/occ-before-manifest.yaml"
   test -s "$OBS_FILES/occ-before.yaml"
   test -s "$OBS_FILES/occ-before-manifest.yaml"
-  helm template oce deploy/helm/openclaw-enterprise -n openclaw-system \
+  helm template "$OBS_OCC_RELEASE" deploy/helm/openclaw-enterprise -n "$OBS_OCC_NAMESPACE" \
     --is-upgrade --no-hooks --validate -f "$OBS_FILES/occ-before.yaml" > "$OBS_FILES/occ-local-manifest.yaml"
   python3 - "$OBS_FILES/occ-before-manifest.yaml" "$OBS_FILES/occ-local-manifest.yaml" <<'PY_COMPARE'
 import pathlib, sys
@@ -132,8 +137,8 @@ Use the Kubernetes API's translated IPv4 addresses as `/32` and port in
 
 ```yaml
 occ:
-  namespace: openclaw-system
-  release: oce
+  namespace: <OBS_OCC_NAMESPACE>
+  release: <OBS_OCC_RELEASE>
 cluster:
   cidrs: ["<actual-api-endpoint>/32"]
   port: 6443
@@ -148,17 +153,35 @@ grafana:
   test -s "$OBS_FILES/cluster-uid"
   test "$(kubectl --context "$HELM_KUBECONTEXT" get namespace kube-system -o jsonpath='{.metadata.uid}')" = "$(cat "$OBS_FILES/cluster-uid")"
   rm -f "$OBS_FILES/demo-installed"
-  helm install demo deploy/helm/openclaw-observability-demo \
-    -n oce-observability-demo -f "$OBS_FILES/demo.yaml" --wait --timeout 5m
+  helm upgrade --install demo deploy/helm/openclaw-observability-demo \
+    -n oce-observability-demo -f "$OBS_FILES/demo.yaml" --wait --timeout 10m
   touch "$OBS_FILES/demo-installed"
 )
 ```
 
-A failed or interrupted install can reserve the name and create resources without
-a marker; follow [recovery](demo-cleanup.md#recover-an-incomplete-setup).
+The first install pulls three images; the 10-minute wait allows for a cold
+image cache. If it fails with `context deadline exceeded`, rerun this block
+unchanged: Helm upgrades the failed release in place. Any other error, or an
+interrupted run (Helm reports `another operation ... is in progress`), can
+leave resources without a marker; follow [recovery](demo-cleanup.md#recover-an-incomplete-setup).
+
+After you update the checkout for an OCC upgrade, rerun this block to pick up
+dashboard and NetworkPolicy changes. A changed configuration restarts Prometheus,
+Grafana, and Loki: their disposable data is lost, and a `kubectl port-forward` to
+Grafana stops working until you start it again.
+
+For a custom release, read its generated Service names with
+`helm get manifest RELEASE -n NAMESPACE` before adapting the port-forward command
+below. Short DNS-label names stay unchanged; other names include the original
+release hash to fit the 63-character Service limit.
+If an upgrade changes the Loki name, update every managed or external Collector
+that saved the old address and refresh its process configuration; see
+[refresh a renamed Loki address](demo-cleanup.md#refresh-a-renamed-loki-address).
+Grafana provisioning does not update separate exporter Secrets.
 
 Services use `ClusterIP`. Prometheus reads Pod metadata, not Secrets. Grafana
-bundles plugins; startup downloads are disabled.
+bundles plugins; startup downloads are disabled. Its disposable database is
+memory-backed so first-start migrations finish in seconds.
 
 ## Connect OCC telemetry
 
@@ -179,11 +202,11 @@ For the chart-managed Collector, create dedicated demo Secrets:
   test -s "$OBS_FILES/cluster-uid"
   test "$(kubectl --context "$HELM_KUBECONTEXT" get namespace kube-system -o jsonpath='{.metadata.uid}')" = "$(cat "$OBS_FILES/cluster-uid")"
   rm -f "$OBS_FILES/collector-secrets-created" "$OBS_FILES/managed-values-created"
-  kubectl --context "$HELM_KUBECONTEXT" -n openclaw-system create secret generic occ-demo-collector-config \
+  kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" create secret generic occ-demo-collector-config \
     --from-file=collector.yaml=deploy/logging/collector.yaml \
     --from-file=kubernetes.yaml=deploy/logging/kubernetes.yaml \
     --from-file=exporter.yaml=deploy/logging/exporter.yaml
-  kubectl --context "$HELM_KUBECONTEXT" -n openclaw-system create secret generic occ-demo-collector-exporter \
+  kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" create secret generic occ-demo-collector-exporter \
     --from-literal=OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://demo-loki.oce-observability-demo.svc:3100/otlp/v1/logs
   touch "$OBS_FILES/collector-secrets-created"
 )
@@ -257,7 +280,7 @@ capabilities and affected objects stable through upgrade, or stop and reinspect.
   test -s "$OBS_FILES/cluster-uid"
   test "$(kubectl --context "$HELM_KUBECONTEXT" get namespace kube-system -o jsonpath='{.metadata.uid}')" = "$(cat "$OBS_FILES/cluster-uid")"
   (cd "$OBS_FILES" && sha256sum occ-demo.yaml > occ-demo.sha256)
-  helm upgrade oce deploy/helm/openclaw-enterprise -n openclaw-system \
+  helm upgrade "$OBS_OCC_RELEASE" deploy/helm/openclaw-enterprise -n "$OBS_OCC_NAMESPACE" \
     --history-max 0 --reset-values -f "$OBS_FILES/occ-demo.yaml" \
     --dry-run=server --debug > "$OBS_FILES/occ-upgrade-preview.txt"
   test -s "$OBS_FILES/occ-upgrade-preview.txt"
@@ -298,13 +321,14 @@ Upgrade using only inspected demo values, resetting saved values:
   esac
   (cd "$OBS_FILES" && sha256sum -c occ-backup.sha256)
   revision=$(cat "$OBS_FILES/occ-revision")
-  test "$(kubectl --context "$HELM_KUBECONTEXT" -n openclaw-system get secret \
-    "sh.helm.release.v1.oce.v$revision" -o jsonpath='{.metadata.uid}')" = "$(cat "$OBS_FILES/occ-release-uid")"
+  test "$(kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" get secret \
+    "sh.helm.release.v1.$OBS_OCC_RELEASE.v$revision" -o jsonpath='{.metadata.uid}')" = "$(cat "$OBS_FILES/occ-release-uid")"
   test "$(release_digest)" = "$(cat "$OBS_FILES/occ-release-digest")"
-  helm status oce -n openclaw-system -o json | python3 -c '
-import json, sys
+  helm status "$OBS_OCC_RELEASE" -n "$OBS_OCC_NAMESPACE" -o json | python3 -c '
+import json, os, sys
 s = json.load(sys.stdin)
-if (s.get("name") != "oce" or s.get("namespace") != "openclaw-system"
+if (s.get("name") != os.environ["OBS_OCC_RELEASE"]
+    or s.get("namespace") != os.environ["OBS_OCC_NAMESPACE"]
     or s.get("info", {}).get("status") != "deployed"
     or type(s.get("version")) is not int or s["version"] != int(sys.argv[1])):
     sys.exit("Release changed since setup; stop and inspect it.")
@@ -312,16 +336,27 @@ if (s.get("name") != "oce" or s.get("namespace") != "openclaw-system"
   (cd "$OBS_FILES" && sha256sum -c occ-demo.sha256)
   rm -f "$OBS_FILES/upgrade-inspected" "$OBS_FILES/upgrade-preview-complete"
   touch "$OBS_FILES/occ-change-started"
-  helm upgrade oce deploy/helm/openclaw-enterprise -n openclaw-system \
+  helm upgrade "$OBS_OCC_RELEASE" deploy/helm/openclaw-enterprise -n "$OBS_OCC_NAMESPACE" \
     --history-max 0 --reset-values -f "$OBS_FILES/occ-demo.yaml" --wait --timeout 5m
+  if test "$OBS_COLLECTOR_MODE" = managed; then
+    kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" \
+      rollout status daemonset/openclaw-enterprise-collector --timeout=5m
+  fi
   kubectl --context "$HELM_KUBECONTEXT" -n oce-observability-demo \
     port-forward service/demo-grafana 3001:3000 --address 127.0.0.1
 )
 ```
 
-Keep forwarding running. Sign in at `http://127.0.0.1:3001` as `admin` with
+Helm's `--wait` can return while a new Collector Pod is still starting (a
+DaemonSet may have one unavailable Pod), so the block waits for its rollout before
+forwarding. Keep forwarding running. Sign in at `http://127.0.0.1:3001` as `admin` with
 the generated password. Open **OCC → OCC observability** for metrics and logs.
-Point `observability.url` to its `/d/occ-observability` URL.
+For a console link, set `observability.url` to its `/d/occ-observability` URL in
+the [Installation startup YAML](../../reference/configuration.md#installation-startup-configuration),
+not `occ-demo.yaml` (profile installs set `controlPlane.observabilityUrl`). Apply it
+as a separate change with
+[Apply other Installation changes](../deploy/production-upgrade.md#apply-other-installation-changes);
+the new checksum restarts the API and worker.
 
 ## Verify actual data
 
@@ -348,6 +383,18 @@ Expand a row for request, work, and workload identity. In **Explore**, query:
 {service_name="occ-api"} | request_id="<request-id-from-log-details>"
 ```
 
+Line bodies hold the event name (Codex turn, tool-call and short plain-text
+Codex messages excepted), so a line filter such as
+`|= "rev_..."` matches nothing. Filter on structured metadata instead:
+`occ_revision_id`, `occ_agent_id`, `occ_namespace_id` and `work_id` on OCC
+records, or `openclaw_revision_id` and `openclaw_agent_id` on Gateway and
+Harness records:
+
+```logql
+{service_name="occ-worker"} | occ_revision_id="<revision-id>"
+{service_name=~"openclaw-gateway|codex-app-server"} | openclaw_revision_id="<revision-id>"
+```
+
 The reviewed platform-owned Collector filters records and replaces retained bodies
 with event names before export. Grafana formats metadata without adding identity
 labels or enforcing export. Operators must verify destinations,
@@ -367,7 +414,7 @@ growth. The log endpoint is `/otlp/v1/logs`, not `/v1/logs`.
 
 ## Recover an incomplete setup
 
-Do not rerun failed or interrupted commands. Follow [recover an incomplete setup](demo-cleanup.md#recover-an-incomplete-setup).
+Except for a demo install wait timeout (see above), do not rerun failed or interrupted commands. Follow [recover an incomplete setup](demo-cleanup.md#recover-an-incomplete-setup).
 
 ## Remove only the demo
 

@@ -9,8 +9,9 @@ Separate Agents receive separate service principals, even when they share a
 Namespace. The service principal is immutable, belongs to its exact Agent and
 Namespace, and remains the same across every revision of that Agent.
 
-An Agent service principal does not inherit your permissions, session cookie,
-provider credentials, or another Agent's identity. It has the same
+Inheriting the creator's identity, permissions, session cookie, or provider
+credentials is not yet supported. An Agent service principal cannot assume
+another Agent's identity. It has the same
 role-granted capabilities as a human Principal: an appropriately scoped Role
 and AccessBinding can grant any platform action, including administrative
 actions and access to another Agent in the same Namespace. Its Namespace scope,
@@ -33,7 +34,7 @@ authentication through the controller API remain deferred.
 
 An Agent may also reference one same-Namespace, OCC-owned
 [service account](../service-accounts.md) through
-`harnessAuth: { method: "chatgpt_service_account", serviceAccountId }`; setting
+`harnessAuth: { method: "codex_pat", source: { kind: "service_account", namespaceId, id: serviceAccountId } }`; setting
 `harnessAuth` to `null` clears it. This credential binding does not
 replace its ServicePrincipal or Kubernetes ServiceAccount.
 
@@ -53,16 +54,27 @@ Each Agent explicitly records how its selected Harness runs:
 The Agent's native Configuration selects a Harness through model/provider
 `agentRuntime.id` policy. The [Harness execution reference](../harness-execution.md)
 owns supported runtime selections, model catalogs, transport, and credential
-boundaries. OCC rejects conflicting, unknown, or mode-incompatible selections
-before admitting a revision. A selected SandboxDriver currently requires
+boundaries. OCC rejects conflicting, unknown, missing, or mode-incompatible
+selections before admitting a revision: deploy returns `400 INVALID_REQUEST`
+with the specific reason, such as "The configured Agent model requires an
+explicit supported Harness runtime." A selected SandboxDriver currently requires
 `dedicated` Codex execution; it does not support embedded OpenClaw.
 
 An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
 alongside its required `configurationId`. Omission preserves the current value;
 `harnessAuth: null` clears authentication and `backendId: null` clears the
 Backend. Existing revisions retain their immutable placement, auth binding, and
-Backend association.
-See the
+Backend association. For the current `harnessAuth` source, an update checks only
+the caller's grant (Secret or credential source `operate`, account `read`) and
+reads no record. After the Installation selects another Secret Driver or
+Credential Gateway, an update can still omit, clear, or replace the old binding;
+naming it again fails with `503`, and so does deploying with it. For a Secret,
+that `503`, like creating an Agent with one, says to bind a Secret stored
+through the selected driver. The named Configuration's Secret bindings get the
+full check on every update, even when `configurationId` is unchanged: until
+that Configuration's `secretBindings` name Secrets stored through the selected
+driver, updates and deploys fail with `503` and a message that says so.
+Updating that Configuration, or naming another one, resolves it. See the
 [Harness execution topology flow](../../flows/harness-execution-topology.md) for
 runtime selection, identity boundaries, and activation.
 
@@ -105,9 +117,9 @@ an account's selected credential reference affect only future deployments. A
 snapshot freezes a Secret reference, not the value stored at that reference.
 
 The separate PostgreSQL controller worker prepares the exact Agent gateway and
-revision, activates its route, retires its predecessor, and sets
-`activeRevisionId`. Each Agent owns its gateway; sibling Agents never share
-one. Kubernetes Compute supports managed authentication; SSH Compute supports
+revision, sets `activeRevisionId`, activates its route, and retires its
+predecessor; see [activation order](#the-active-revision-after-a-failed-deployment).
+Each Agent owns its gateway; sibling Agents never share one. Kubernetes Compute supports managed authentication; SSH Compute supports
 embedded OpenClaw with [operator-managed runtime credentials](../drivers/ssh-compute.md#credentials-and-supported-boundaries).
 Docker rejects authentication bindings. Each Driver rejects unsupported bindings
 and topologies before deployment. Kubernetes Compute starts either an Agent-owned gateway plus a dedicated
@@ -115,8 +127,10 @@ Codex workload with its separate ServiceAccount, or one embedded combined
 gateway/Harness. Without a SandboxDriver, Compute owns the Codex Deployment;
 with one selected, that Driver provisions the dedicated Harness workload.
 Both embedded and dedicated modes are supported in production, subject to the
-selected Drivers' mode constraints. A replacement must preserve
-its predecessor's Service selector until activation succeeds. Without an
+selected Drivers' mode constraints. Unless Compute requests
+[exclusive replacement](../drivers/compute.md#production-revision-stages), as
+Kubernetes does for dedicated Agents, a replacement must preserve its
+predecessor's Service selector until activation succeeds. Without an
 eligible worker, revision work remains queued.
 
 When creation included [initial workspace files](../agents.md#initial-contents-at-creation),
@@ -128,6 +142,123 @@ or Harness runs. A `202` deployment response does not establish that this gate
 has passed. After activation, OCC clears staged contents and retains setup
 identity and completion metadata. Later revisions check completion without
 reapplying the original text, preserving edits made in the live workspace.
+
+Deployment admission checks what the Installation supports before it checks
+the Agent service principal's grants. An unsupported topology, such as
+dedicated native OpenClaw without
+[native worker support](../harness-execution.md#native-worker-support), is
+refused with its capability error even when the Agent principal also lacks a
+grant. When only the Agent principal's grant is missing, the `403` names that
+`servicePrincipalId`, the action, and the exact Secret or credential source,
+for example `The Agent service principal <id> is not authorized to operate
+secret <id>`. Its audit event records your own request with reason code
+`AGENT_PRINCIPAL_NOT_AUTHORIZED` and names that principal, action, resource and
+IAM evidence in its details. Denials of your own permissions stay generic.
+Admission then asks Compute to check the Configuration's gateway settings. On
+Kubernetes, a gateway setting it refuses answers `409 RESOURCE_CONFLICT` naming
+the setting and what is accepted, never its value, before any revision is created
+(see [gateway authentication](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication)).
+
+### Pending deployment progress
+
+While a revision is not ready, deployment `progress.lastAttempt.code` says why
+when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live Pod
+of the revision has `PodScheduled` `False` with reason `Unschedulable`, for
+example for want of node memory, and `WORKSPACE_NODE_PENDING` when the Harness
+and gateway are ready and only the workspace node's gateway connection is
+outstanding. Activation of a dedicated revision reports
+`WORKSPACE_NODE_BINDING_PENDING` while the gateway has not yet applied the
+workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has
+not connected. Otherwise the code is `REVISION_INCOMPLETE`. These codes change no
+outcome: the revision stays pending until it is ready, a held runtime failure
+ends it, or the convergence deadline passes. The worker rechecks an unready
+revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
+
+A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
+apply its workspace node, so activation fails at once with
+`AGENT_GATEWAY_UNAUTHORIZED`. Check that the Agent's Configuration sets
+`gateway.auth.password` to `OPENCLAW_GATEWAY_PASSWORD` (**Enable gateway password
+access**) and deploy again; the gateway log's `runtime.workspace_node` line names
+OpenClaw's refusal `reason`. A rate-limited or pairing refusal still waits.
+
+A dependency that fails while it converges is pending too.
+`AGENT_GATEWAY_UNAVAILABLE` means the worker could not reach the new gateway
+through its route yet (for example, the route answers 404 until the gateway
+proxy has the new route, or 503 until it has the ready Pod), and
+`KUBERNETES_API_UNAVAILABLE` means a Kubernetes API request timed out, could not
+connect, or got 429 or 5xx. Both codes apply during preparation and
+activation alike. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway
+refuses new requests from the controller because it holds OpenShell's limit of
+durable request admissions; see the
+[OpenShell troubleshooting](../drivers/openshell-sandbox.md#troubleshooting).
+The worker retries on the same cadence without spending its
+`OCC_WORKER_MAX_ATTEMPTS` budget. A dependency still failing at the convergence
+deadline fails the deployment with its own code.
+
+`REFUSED_CANDIDATE_STOP_PENDING` means the worker refused the candidate but could
+not yet stop its workload, for example Pods stuck terminating. The message names
+the refusal, such as `AUTHORIZATION_DENIED`, that `error` carries once the stop
+succeeds, unless a newer revision supersedes the deployment; a superseded one
+retries the stop of an earlier refusal even if that refusal has since lifted. The wait has no
+deadline or attempt limit, since the refused version could still serve. Each
+failed stop doubles the recheck, from the cadence above to 5 minutes, and waits
+at least four times the stop's duration, so other Agents' deployments keep
+running; every try moves `lastAttempt.at`. If the refusal lifts, for example when
+`deploy` is granted again, the deployment continues within its convergence
+deadline. The worker log's `worker.completed` `cause` says why the stop fails.
+
+### Model check failure cause
+
+When the startup model check fails with `RUNTIME_MODEL_PROBE_FAILED`, the
+deployment error's `data.runtimeFailure` names the runtime component, check,
+time and, when the runtime classified it, a `cause`: a `kind` and an optional
+`detail` token from this closed vocabulary.
+
+| `kind`           | Meaning                                                    | `detail`                                                                                                                                                           |
+| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` for oversized OpenClaw output                                                      |
+| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
+| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                 |
+| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                               |
+
+OpenClaw's `format` covers an unknown model and a request the provider rejected
+as malformed, such as invalid provider settings. A rejected credential is
+`RUNTIME_AUTHENTICATION_FAILED` and a timeout `RUNTIME_MODEL_PROBE_TIMEOUT`;
+neither has a cause. The runtime builds a cause only from these tokens, and
+Compute drops any other cause while keeping the code, so it never carries
+native output, provider text, or credentials. The console shows it as
+**Cause**, and `occ agent deployment-status` prints it in the error.
+
+### The active revision after a failed deployment
+
+`activeRevisionId` names the revision the worker last committed to run. Stop
+shuts it down first, coordinated runtime upgrades require it, and runtime
+inspection reads its containers. It is not a health result; each revision's [deployment status](../agents.md#deployment-status)
+is. Unless Compute activates before commit, the worker sets the pointer before
+activation finishes.
+
+If a revision fails before the worker sets the pointer, the pointer is
+unchanged. After a failed first deployment, the Agent has no active revision.
+With [exclusive replacement](../drivers/compute.md#production-revision-stages),
+the unchanged pointer names a predecessor that was already stopped, so nothing
+serves until a new revision activates. When the worker refuses such a candidate,
+or any first deployment, for example because its deploying actor lost `deploy`
+or a credential source was revoked, it stops the candidate's workload too, and
+records the refusal only after the stop succeeds; until then the deployment
+waits as [`REFUSED_CANDIDATE_STOP_PENDING`](#pending-deployment-progress). Other
+refused candidates stay until a later successful deployment, stop or delete. A candidate whose runtime
+failed by itself, such as `RUNTIME_MODEL_PROBE_FAILED` or
+`CONVERGENCE_DEADLINE_EXCEEDED`, keeps its Pods so its version's Logs tab can
+show the cause; the next deployment stops them.
+Kubernetes embedded replacement reports ready while the predecessor still
+serves, so the worker sets the pointer first. Activation then replaces the
+shared gateway, and the new gateway runs the startup model probe. If that
+probe rejects the credential, the deployment fails with
+`RUNTIME_AUTHENTICATION_FAILED` (or, for a probe that timed out after its retries,
+`RUNTIME_MODEL_PROBE_TIMEOUT`). The failed revision stays active because its
+workload is the only one left; the predecessor has already been replaced. OCC
+never rolls back to an earlier revision. To recover, correct the cause and
+deploy a new revision, or stop the Agent.
 
 Revision list and read operations are scoped beneath the exact Namespace and
 Agent. Each returned revision requires its own authorized read; substituting a

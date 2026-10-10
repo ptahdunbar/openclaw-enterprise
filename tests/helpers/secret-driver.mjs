@@ -10,6 +10,17 @@ export function createTestSecretDriver(options = {}) {
     return `${secret.namespaceId}:${secret.id}`;
   }
 
+  function requireEntry(key, secret) {
+    const entry = entries.get(key);
+    if (entry === undefined) {
+      throw new Error("Secret does not exist.");
+    }
+    if (!isDeepStrictEqual(entry.backendRef, secret.backendRef)) {
+      throw new Error("Secret backend identity changed.");
+    }
+    return entry;
+  }
+
   function backendRefFor(identity) {
     const namespaceSuffix = identity.namespaceId.replace(/^ns_/, "").replaceAll("_", "-");
     const secretUid = identity.id.replace(/^sec_/, "");
@@ -59,14 +70,21 @@ export function createTestSecretDriver(options = {}) {
         throw options.updateError;
       }
       const key = keyOf(secret);
-      const entry = entries.get(key);
-      if (entry === undefined) {
-        throw new Error("Secret does not exist.");
+      const entry = requireEntry(key, secret);
+      entries.set(key, { ...entry, value });
+    },
+    async compareAndSwap(secret, expected, value) {
+      calls.push({ operation: "compareAndSwap", secret: clone(secret), expected, value });
+      if (options.updateError !== undefined) {
+        throw options.updateError;
       }
-      if (!isDeepStrictEqual(entry.backendRef, secret.backendRef)) {
-        throw new Error("Secret backend identity changed.");
+      const key = keyOf(secret);
+      const entry = requireEntry(key, secret);
+      if (entry.value !== expected) {
+        return false;
       }
       entries.set(key, { ...entry, value });
+      return true;
     },
     async delete(secret) {
       calls.push({ operation: "delete", secret: clone(secret) });
@@ -74,13 +92,7 @@ export function createTestSecretDriver(options = {}) {
         throw options.deleteError;
       }
       const key = keyOf(secret);
-      const entry = entries.get(key);
-      if (entry === undefined) {
-        throw new Error("Secret does not exist.");
-      }
-      if (!isDeepStrictEqual(entry.backendRef, secret.backendRef)) {
-        throw new Error("Secret backend identity changed.");
-      }
+      requireEntry(key, secret);
       entries.delete(key);
     },
     async withValue(secret, use) {
@@ -99,13 +111,7 @@ export function createTestSecretDriver(options = {}) {
       if (resolveOverride !== undefined) {
         return clone(resolveOverride(secret));
       }
-      const entry = entries.get(keyOf(secret));
-      if (entry === undefined) {
-        throw new Error("Secret does not exist.");
-      }
-      if (!isDeepStrictEqual(entry.backendRef, secret.backendRef)) {
-        throw new Error("Secret backend identity changed.");
-      }
+      const entry = requireEntry(keyOf(secret), secret);
       return clone(entry.backendRef);
     },
   };

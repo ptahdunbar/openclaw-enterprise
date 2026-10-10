@@ -3,12 +3,14 @@ import {
   type JSONSchema,
   type PluginCatalogEntry,
   type PluginCatalogPage,
+  type PluginDiscoveryAuthentication,
   type PluginDriver,
   type PluginDesiredState,
   type PluginApprovers,
   type PluginPolicyCapabilities,
   type PluginDriverContext,
   type PluginDriverIdentity,
+  type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
   NotImplementedError,
@@ -17,12 +19,14 @@ import {
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
 import {
+  hasAliasedSelections,
   openClawCatalogEntries,
   validatePolicies,
   type CodexPluginCatalogReader,
 } from "./runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
 import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
+import { validateCodexAutomaticReviewerPolicy } from "../../gateway/codex-approval-policy.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -316,9 +320,22 @@ class BundledPluginDriverBase {
     } catch (error) {
       const field =
         error instanceof Error && "policyField" in error ? error.policyField : undefined;
+      if (field === "pluginId") {
+        const pluginId =
+          error instanceof Error && "pluginId" in error && typeof error.pluginId === "string"
+            ? error.pluginId
+            : undefined;
+        throw new PluginPolicyValidationError("unknownPlugin", this.id, pluginId);
+      }
       throw new PluginPolicyValidationError(
         field === "toolDefaults.reviewer" || field === "tools[id].reviewer" ? field : undefined,
       );
+    }
+    // Admission-only, like the Codex approvers check: revisions admitted before this
+    // check keep rendering unchanged. An Agent or in-flight provisioning record that
+    // holds both keys is refused at its next create replay, update, deploy, or resume.
+    if (hasAliasedSelections(kind, selections)) {
+      throw new PluginPolicyValidationError("aliasedPlugin");
     }
   }
 
@@ -392,6 +409,13 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
       throw new PluginPolicyValidationError("approvers");
     }
   }
+
+  validateAgentConfiguration(
+    selections: PluginDesiredState,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    validateCodexAutomaticReviewerPolicy(selections, configuration);
+  }
   private readonly catalogReader: CodexPluginCatalogReader | undefined;
   private readonly catalogSource: "hosted" | "openai-curated";
   readonly discoveryCredential: "required" | "none";
@@ -401,7 +425,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   }
 
   async discoverCatalog(
-    input: { readonly accessToken?: string; readonly cursor?: string; readonly q?: string },
+    input: PluginDiscoveryAuthentication & { readonly cursor?: string; readonly q?: string },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
     if (this.catalogSource === "openai-curated") {
@@ -419,21 +443,11 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
         setup: CURATED_SETUP,
       };
     }
-    if (input.accessToken === undefined) {
-      throw new PluginDiscoveryError("credentials_rejected");
-    }
-    return discoverHostedPlugins(
-      {
-        accessToken: input.accessToken,
-        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-        ...(input.q === undefined ? {} : { q: input.q }),
-      },
-      signal,
-    );
+    return discoverHostedPlugins(input, signal);
   }
 
   async getCatalogPlugin(
-    input: { readonly accessToken?: string; readonly pluginId: string },
+    input: PluginDiscoveryAuthentication & { readonly pluginId: string },
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
     if (this.catalogSource === "openai-curated") {
@@ -443,10 +457,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
       }
       return this.catalog([entry])[0]!;
     }
-    if (input.accessToken === undefined) {
-      throw new PluginDiscoveryError("credentials_rejected");
-    }
-    return getHostedPlugin({ accessToken: input.accessToken, pluginId: input.pluginId }, signal);
+    return getHostedPlugin(input, signal);
   }
 
   constructor(

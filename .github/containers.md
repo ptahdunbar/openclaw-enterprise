@@ -18,17 +18,18 @@ No-push preparation supports private or public source in
 `openclaw/openclaw-enterprise` only when this workflow receives `publish: false`
 (`PUBLISH` is the exact string `"false"`). The trusted main workflow, immutable
 source SHA, successful exact-source CI, and approved base-image checks still apply.
-Actual GHCR publication and Docker Hub promotion continue to require private
-source and private GHCR packages. From public source, both remain blocked
-pending an explicitly reviewed package-access and credential design.
+Actual GHCR publication and recovery require the public
+`openclaw/openclaw-enterprise` repository and public GHCR image packages. Optional
+chart publication requires the public chart package too. Docker Hub promotion
+copies from public GHCR and keeps the separately authorized Docker Hub
+destinations private.
 
 [GitHub warns](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#ensuring-workflow-access-to-your-package)
 that granting a public repository Actions access to private packages can expose
-those packages to forks. These workflow guards do not revoke existing package
-grants or inherited access. Before any repository visibility transition, an
-operator must review package permissions, Actions grants, credentials, and
-retained artifacts; private package visibility alone is not a confidentiality
-guarantee.
+those packages to forks. Do not use private GHCR packages for real publication
+from this public repository. Bootstrap can create or verify private marker
+packages only so an operator can finish package setup; make the packages public
+before source images or the chart publish.
 
 ## Operator setup
 
@@ -48,22 +49,30 @@ approval or approval-comment requirement. Complete these prerequisites first.
   approved Node 24 digest used by `scripts/ci/test-suites/images-packaging.json`
   and the runtime Dockerfile. All three must agree. This is an explicit approval,
   not a default.
-- Bootstrap the two **private**, pre-existing GHCR image packages. Chart publication
-  also requires `ghcr.io/openclaw/charts/openclaw-enterprise`. Link each selected
-  package to `openclaw/openclaw-enterprise` and grant this repository Actions access. The
-  Enterprise publisher requires these packages to exist. Use the manual
-  [marker bootstrap](#bootstrap-private-packages), then confirm private
-  visibility and linkage.
+- Bootstrap or confirm the two **public**, pre-existing GHCR image packages. Chart
+  publication also requires the public `ghcr.io/openclaw/charts/openclaw-enterprise`
+  package. Link each selected package to the public
+  `openclaw/openclaw-enterprise` repository when GitHub records a connection, and
+  grant this repository Actions access. The Enterprise publisher requires these
+  packages to exist. Use the manual [marker bootstrap](#bootstrap-ghcr-packages)
+  for missing packages, then make any new marker packages public before publishing
+  source images or the chart.
+  Before converting an existing private package, inventory its retained versions
+  and access grants. Confirm that every retained image layer or chart is intended
+  for public distribution; a public source repository alone does not establish
+  that. [Changing package visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
+  exposes all retained versions and cannot be reversed to private. If any retained
+  content must stay private, leave that package private and choose separate public
+  destinations before publishing. The workflow does not perform this conversion.
 - Set environment variables `GHCR_CONTROLLER_IMAGE` and `GHCR_RUNTIME_IMAGE`
   to their full `ghcr.io/openclaw/...` names without tags or digests. They must be
-  different packages. There is no public destination fallback.
+  different packages. There is no alternate destination fallback.
 
 The publishing job uses its short-lived `GITHUB_TOKEN` with `packages: write`;
 preparation has only `contents: read`, no environment or registry credentials.
 No-push preparation needs the approved base-image variable and trusted source/CI,
-not the publishing environment or package-access grants. Do not apply the
-private-package setup above to a public source repository.
-Missing settings, inaccessible metadata, conflicting package linkage, or nonprivate
+not the publishing environment or package-access grants.
+Missing settings, inaccessible metadata, conflicting package linkage, or nonpublic
 visibility stop publication. GitHub may omit repository metadata; that omission
 does not require an approval comment.
 Repository-level secrets/variables alone do not
@@ -73,16 +82,16 @@ describe effective organization/environment credentials.
 
 GitHub's [package response](https://docs.github.com/en/rest/packages/packages#get-a-package-for-an-organization)
 may omit `repository` or return `null` even for a connected GHCR package. The
-workflow always verifies package identity and private visibility. An explicit
-repository must match the private Enterprise repository; conflicting metadata
+workflow always verifies package identity and public visibility. An explicit
+repository must match the public Enterprise repository; conflicting metadata
 stops publication.
 
 During package setup, open **Package settings** for each destination and confirm
 its connected repository is `openclaw/openclaw-enterprise`, its visibility is
-**Private**, and that repository has the required **Manage Actions access**
+**Public**, and that repository has the required **Manage Actions access**
 grant. Source labels alone do not prove linkage. When GitHub omits repository
 metadata, the publisher relies on this configured package access and still
-checks package identity, private visibility, and immutable tag contents. It does
+checks package identity, public visibility, and immutable tag contents. It does
 not claim to verify omitted linkage through the API.
 
 To migrate an existing environment, first merge this manual-publication change
@@ -92,37 +101,38 @@ variables, main-only branch policy, and disabled administrator bypass. Old runs
 execute their original workflow code; use a new recovery dispatch to publish
 retained artifacts under the updated policy.
 
-## Bootstrap private packages
+## Bootstrap GHCR packages
 
 After configuring the environment and both destination variables, merge the
 reviewed [bootstrap workflow](workflows/container-bootstrap.yml) and wait for
 its exact main-push CI run to succeed. An operator must first confirm that the
-organization permits creation of private container packages under those names.
+organization permits creation of container packages under those names.
 Dispatch **Bootstrap Enterprise Container Packages** on `main` with that
 `ci_run_id`. The manual dispatch authorizes the run.
 
 The workflow uses its short-lived `GITHUB_TOKEN` to push scratch image markers
 and a nondeployable Helm chart marker. Its temporary image contexts and chart
-contain no checkout files or credentials. Existing private packages remain
-unchanged; conflicting repository metadata fails. An authenticated metadata 404
-permits only this harmless push; it does not prove the package is absent. Other
-metadata errors stop the run. After each push, the metadata lookup retries only
-404 responses up to five times at two-second intervals for registry propagation;
-persistent 404 responses fail. Private visibility and the remote digest must
-verify before bootstrap succeeds. Confirm package linkage during setup before
-real-image publication.
+contain no checkout files or credentials. Existing public or private packages
+remain unchanged when they match the expected package and repository metadata;
+conflicting repository metadata fails. An authenticated metadata 404 permits only
+this harmless push; it does not prove the package is absent. Other metadata
+errors stop the run. After each push, the metadata lookup retries only 404
+responses up to five times at two-second intervals for registry propagation;
+persistent 404 responses fail. The remote marker digest must verify before
+bootstrap succeeds. Confirm package linkage during setup before real-image
+publication.
 
 The job summary records package coordinates and marker digests. The unique
 `bootstrap-<run-id>-<attempt>` image tags and chart version are not deployable. Bootstrap
 does not change visibility or access grants; if verification fails, inspect the
 package settings and fix the reported cause before retrying. A partial result is retained,
 and a subsequent dispatch leaves valid existing packages untouched. The ordinary
-publisher still requires verified private packages before copying any source.
+publisher still requires verified public packages before copying any source.
 See the [bootstrap execution flow](../docs/flows/container-package-bootstrap.md).
 
-An authenticated local pull of private images separately requires a credential
-with package read access. Repository administration or an OAuth token with only
-`repo` scope does not establish that access. Workflow package permissions do not
+Public GHCR image pulls do not require a workstation login. Authenticated pulls
+are still required for private marker packages before they are made public and
+for separately authorized private mirrors. Workflow package permissions do not
 grant a workstation credential additional scopes.
 
 ## Prepare and publish
@@ -212,7 +222,7 @@ on `main` with:
 - `workflow_ci_run_id`: successful main-push CI for the current recovery workflow
   revision. This is separate from the original image's CI evidence in its seal.
 
-Review the original digests and current private package settings before dispatch.
+Review the original digests and current public package settings before dispatch.
 Recovery validates artifact IDs and downloads the exact
 artifact IDs from the original run, verifies seals and archive hashes, and
 rechecks original source CI as well as recovery workflow CI. Source must remain
@@ -242,8 +252,8 @@ repositories, use [Docker Hub promotion](container-promotion.md).
 
 ## Proof boundaries
 
-The existing CI Images and Packaging lane gates the selected source. Preparation
-reuses its controller/runtime startup tests against the newly prepared bytes:
+Three existing CI lanes gate the selected source: Images and Packaging, and the two Image Runtime
+Startup lanes. Preparation reuses their controller/runtime startup tests against the newly prepared bytes:
 source CI alone cannot prove a subsequent build with newly resolved npm
 transitives. Loading does not rebuild; each loaded config ID, its index entry, and the
 unchanged archive hash bind both platform smokes to the prepared image. Skopeo preserves manifest
@@ -257,6 +267,6 @@ The [registry integration](../docs/testing/images.md#container-publication-regis
 uses real Skopeo and a disposable registry to check alias replacement and both
 platforms. Neither test proves a live GHCR transfer.
 Workflow syntax: `actionlint .github/workflows/*.yml`.
-Actual no-push builds and the first private-registry transfer still require
+Actual no-push builds and the first public GHCR transfer still require
 their respective authorized hosted runs; configuration and unit tests alone
 do not prove them.

@@ -6,7 +6,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
   policyTypes: [Ingress, Egress]
 ---
 apiVersion: networking.k8s.io/v1
@@ -17,18 +17,18 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: api
   policyTypes: [Ingress]
   ingress:
     - from:
-        {{- range .Values.api.clients }}
+        {{- range $index, $client := .Values.api.clients }}
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .namespace }}
+              kubernetes.io/metadata.name: {{ $client.namespace | quote }}
           podSelector:
             matchLabels:
-              {{- toYaml .podLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" (printf "api.clients[%d].podLabels" $index) "value" $client.podLabels) | nindent 14 }}
         {{- end }}
       ports:
         - protocol: TCP
@@ -42,23 +42,14 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In
         values: [api, worker, initialization]
   policyTypes: [Egress]
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
-          podSelector:
-            matchLabels:
-              {{- toYaml .Values.dns.podLabels | nindent 14 }}
-      ports:
-        - { protocol: UDP, port: 53 }
-        - { protocol: TCP, port: 53 }
+    {{- include "openclaw.networkPolicy.dnsEgress" . | nindent 4 }}
     - to:
         {{- range .Values.database.cidrs }}
         - ipBlock:
@@ -80,13 +71,8 @@ spec:
 {{- end }}
 {{- if .Values.api.modelDiscoveryCidrs }}
 {{- range $cidr := .Values.api.modelDiscoveryCidrs }}
-{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" (toString $cidr)) }}
+{{- if not (regexMatch (include "openclaw.ipv4Host32" .) (toString $cidr)) }}
 {{- fail "api.modelDiscoveryCidrs entries must identify exactly one IPv4 host with /32" }}
-{{- end }}
-{{- range $octet := splitList "." (trimSuffix "/32" $cidr) }}
-{{- if gt (int $octet) 255 }}
-{{- fail "api.modelDiscoveryCidrs contains an invalid IPv4 address" }}
-{{- end }}
 {{- end }}
 {{- end }}
 ---
@@ -98,7 +84,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: api
   policyTypes: [Egress]
   egress:
@@ -139,7 +125,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: api
   policyTypes: [Egress]
   egress:
@@ -160,18 +146,18 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: api
   policyTypes: [Egress]
   egress:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: openclaw-enterprise
-              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
               app.kubernetes.io/component: slack-proxy
       ports:
         - protocol: TCP
@@ -179,7 +165,7 @@ spec:
 {{- end }}
 {{- if .Values.backend.chatgpt.enabled }}
 {{- $providerCidr := .Values.backend.chatgpt.providerCidr }}
-{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" $providerCidr) }}
+{{- if not (regexMatch (include "openclaw.ipv4Host32" .) $providerCidr) }}
 {{- fail "backend.chatgpt.providerCidr must identify one IPv4 /32 destination for api.chatgpt.com:443; it does not configure a forward proxy" }}
 {{- end }}
 ---
@@ -191,7 +177,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: api
   policyTypes: [Egress]
   egress:
@@ -212,16 +198,14 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: api
   policyTypes: [Egress]
   egress:
-    # Empty egressCidrs permits HTTPS to any address for github.com and api.github.com.
+    # Empty egressCidrs permits HTTPS for github.com and api.github.com to any address
+    # except link-local (cloud metadata) 169.254.0.0/16.
     - to:
-        {{- range (default (list "0.0.0.0/0") .Values.auth.github.egressCidrs) }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
+        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.github.egressCidrs | nindent 8 }}
       ports:
         - protocol: TCP
           port: 443
@@ -236,18 +220,38 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: api
   policyTypes: [Egress]
   egress:
     # The API calls only oauth2.googleapis.com and www.googleapis.com. Google publishes
-    # no small stable range for them. Empty egressCidrs permits HTTPS to any address;
-    # narrow it with an egress proxy.
+    # no small stable range for them. Empty egressCidrs permits HTTPS to any address
+    # except link-local (cloud metadata) 169.254.0.0/16; narrow it with an egress proxy.
     - to:
-        {{- range (default (list "0.0.0.0/0") .Values.auth.google.egressCidrs) }}
-        - ipBlock:
-            cidr: {{ . | quote }}
-        {{- end }}
+        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.google.egressCidrs | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+{{- if and .Values.auth.oidc .Values.auth.oidc.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-api-oidc-login-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/component: api
+  policyTypes: [Egress]
+  egress:
+    # The API calls only the configured token and JWKS URLs, whose host names were checked
+    # at startup; this bounds the addresses they resolve to. Empty egressCidrs permits HTTPS
+    # to any address except link-local (cloud metadata) 169.254.0.0/16.
+    - to:
+        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.oidc.egressCidrs | nindent 8 }}
       ports:
         - protocol: TCP
           port: 443
@@ -263,7 +267,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: worker
   policyTypes: [Ingress]
   ingress:
@@ -304,7 +308,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: worker
   policyTypes: [Egress]
   egress:
@@ -328,7 +332,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In

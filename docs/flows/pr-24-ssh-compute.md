@@ -1,7 +1,7 @@
 ---
 created: 2026-09-07
-updated: 2026-09-22
-last_updated_session: authoring-run/d7126920-6a2a-4126-ad7d-fafd57593855
+updated: 2026-10-10
+last_updated_session: authoring-run/f50ad5ce-853f-4d20-9c15-8da39cbe292e
 ---
 
 <a id="pr-24-ssh-compute-flow"></a>
@@ -14,7 +14,7 @@ The worker realizes an admitted embedded OpenClaw AgentRevision on a configured
 Linux host. The SSH Compute Driver sends a controller-owned helper to the host,
 which stages the revision and activates the Agent's systemd gateway after OCC
 commits its active revision. This trace covers preparation, activation,
-retirement, and Namespace deletion. It stops when
+retirement, and Agent and Namespace deletion. It stops when
 control returns to the worker; gateway request execution is outside this flow.
 The [SSH reference](../reference/drivers/ssh-compute.md) owns configuration and
 supported boundaries.
@@ -140,8 +140,8 @@ opaque launch placeholders enter the systemd unit's environment. Hook failure
 prevents launch; failure after hook preparation invokes bounded workload-stop
 compensation. Incomplete finalization remains retryable.
 
-The helper renders the unit for the Agent's private Unix account, replaces
-`current`, restarts the gateway, and polls loopback `/readyz` for up to 120
+The helper renders the unit for the Agent's private Unix account, enables its
+absolute path, replaces `current`, restarts the gateway, and polls loopback `/readyz` for up to 120
 seconds. It writes `served.json` only after readiness succeeds. A matching
 current pointer alone never establishes successful activation. The unit loads
 the per-Agent managed `gateway-password.env` for password access and optionally
@@ -154,10 +154,12 @@ ready while model requests fail. Host credential changes may affect an existing
 revision after restart without a new immutable revision.
 
 Retirement runs `beforeWorkloadStop` hooks and removes the specified snapshot.
-If that snapshot is current, it first stops/disables the unit and removes
+If that snapshot is current, `stopOwnedUnit` verifies the configured file's ownership,
+links its absolute path into systemd's load path, then stops/disables the unit and removes
 `current` and `served.json`. Persistent state, the private account, and other
 snapshots remain. `deactivateRevision` only verifies ownership; the worker's
 dedicated-only deactivation path is outside SSH's supported topology.
+Relinking permits cleanup after `disable` removed a custom directory's load-path link.
 
 ### 5. Delete the Namespace host state
 
@@ -165,9 +167,13 @@ dedicated-only deactivation path is outside SSH's supported topology.
 
 Deletion runs `beforeNamespaceDelete` hooks, then validates every Agent, revision,
 and unit in the deletion set before stopping gateways. The helper stops and
-disables owned units, removes their unit files, reloads systemd, and removes the
+disables owned units through `stopOwnedUnit`, removes their unit files, reloads systemd, and removes the
 Namespace tree, including persistent state, and its owned runtime accounts. The driver clears its in-memory
 bindings only after the host operation succeeds.
+
+Agent deletion (`ssh/index.ts:deleteAgentRuntimeCredentials`,
+`remote-helper.cjs:removeAgent`) does the same for one Agent after its revisions
+retire, which frees its gateway port.
 
 ## Debugging and Verification
 
@@ -201,6 +207,8 @@ bindings only after the host operation succeeds.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-10 06:15: Trace absolute unit enablement and relinking for owned cleanup outside systemd's load path. (authoring-run/f50ad5ce-853f-4d20-9c15-8da39cbe292e - 792304b6a09b5df4f46e3889066f231610b294cf)
 
 - 2026-09-22 22:31: Describe supported auth admission and remove legacy environment migration behavior. (authoring-run/d7126920-6a2a-4126-ad7d-fafd57593855 - c387eef76420f05a060689d2fa04b57a3e416956)
 - Removed legacy gateway credential compatibility handling. (NOT_IN_SPEC)

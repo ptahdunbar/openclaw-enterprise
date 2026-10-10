@@ -1,19 +1,21 @@
 ---
 created: 2026-09-21
-updated: 2026-09-22
-last_updated_session: codex/01a0c70f-8a8f-7c62-ac81-ee1a3e99f48b
+updated: 2026-09-30
+last_updated_session: authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584
 ---
 
 # Container package bootstrap flow
 
 ## Overview
 
-A manually dispatched GitHub Actions run creates private GHCR packages using
-harmless marker images. This supplies the existing Enterprise publisher's
-pre-existing-package prerequisite. Bootstrap ends after package metadata and
-marker digests verify. Enterprise
-publication and recovery each need their own dispatch; recovery
-reuses retained archives after an interrupted publication.
+A manually dispatched GitHub Actions run creates missing GHCR packages using
+harmless marker images. GitHub creates new marker packages as private; bootstrap
+does not change visibility or access grants. Existing public or private packages
+can pass bootstrap when their package identity and explicit repository linkage
+match. Before Enterprise source images or the chart can publish, an operator must
+make every selected package public. Bootstrap ends after package metadata and
+marker digests verify. Enterprise publication and recovery each need their own
+dispatch; recovery reuses retained archives after an interrupted publication.
 
 ## Entry Points
 
@@ -29,21 +31,21 @@ reuses retained archives after an interrupted publication.
 
 ```mermaid
 graph TD
-  A["Operator dispatches bootstrap"] --> C["Runner verifies private main source, CI and branch policy"]
+  A["Operator dispatches bootstrap"] --> C["Runner verifies public main source, CI and branch policy"]
   C --> D["GitHub returns destination metadata"]
   D -->|invalid existing package or API error| X["Run fails"]
-  D -->|valid private package or 404| E["Build scratch marker from temporary context"]
+  D -->|valid public or private package or 404| E["Build scratch marker from temporary context"]
   E --> F["Recheck gates and package metadata"]
-  F -->|valid existing private package| G["Keep package unchanged"]
+  F -->|valid existing package| G["Keep package unchanged"]
   F -->|404| H["Copy marker with workflow token"]
-  H --> I["Wait for private metadata and verify remote digest"]
+  H --> I["Wait for metadata and verify remote digest"]
   I -->|mismatch| X
   I -->|verified| J["Record marker in job summary"]
   G --> K["Continue to next package"]
   J --> K
   K --> L["Operator completes package setup for Enterprise publication"]
   R["Operator dispatches recovery of retained archives"] --> S["Verify recovery CI and original preparation"]
-  S --> U["Verify original seals, CI and private packages"]
+  S --> U["Verify original seals, CI and public packages"]
   U --> V["Inspect authenticated remote source tag"]
   V -->|matching digest| W["Keep existing image"]
   V -->|manifest unknown| Y["Copy original archive and verify digest"]
@@ -62,12 +64,12 @@ hosted bootstrap or subsequent release has succeeded.
 `scripts/ci/container-bootstrap.mjs:main` reuses
 `scripts/ci/container-release.mjs:verifyMainSource`, `verifyCi`, and
 `verifyEnvironment`. Source equals the trusted main workflow revision and
-checkout. The repository is private, exact-source main-push CI succeeds, and the
+checkout. The repository is public, exact-source main-push CI succeeds, and the
 environment disables admin bypass and permits only branch `main`. Invalid context fails before a registry write.
 
 Each configured package name passes `ghcrPackageName`. Existing metadata must
-pass `validatePackage` for private visibility and, when returned, exact private
-repository linkage. GitHub's optional repository field may be absent or null.
+pass `validatePackage` for public or private bootstrap visibility and, when
+returned, exact public repository linkage. GitHub's optional repository field may be absent or null.
 Both bootstrap and publication accept omitted linkage without an approval
 comment. Operators configure the package connection and Actions access at setup.
 Only bootstrap opts into `github`'s 404 result; normal publication still fails
@@ -88,10 +90,10 @@ manifest digest. A missing digest or failed push stops the run.
 Before each transfer, the helper repeats source, CI, environment, and package
 checks. Valid existing packages remain unchanged. A 404 permits copying the
 marker under a unique run/attempt tag. The helper retries post-push metadata 404s
-up to five times, two seconds apart, then requires private metadata and a matching
-remote manifest digest. Other API errors fail immediately. A failed post-push check fails the
-run and leaves the harmless marker for operator inspection; it changes no grants
-or visibility and performs no automatic deletion.
+up to five times, two seconds apart, then requires acceptable bootstrap metadata
+and a matching remote manifest digest. Other API errors fail immediately. A
+failed post-push check fails the run and leaves the harmless marker for operator
+inspection; it changes no grants or visibility and performs no automatic deletion.
 
 ### 3. Hand verified packages to release operators
 
@@ -103,7 +105,7 @@ is possible. The operator follows the existing publication procedure to build,
 smoke and publish actual Enterprise images.
 
 `scripts/ci/container-release.mjs:verifyGhcr` is shared by publication and promotion.
-It checks private package identity and rejects conflicting repository metadata.
+It checks public package identity and rejects conflicting repository metadata.
 When GitHub omits repository metadata, it accepts the omission without querying
 approval history. Package linkage is configured during
 [operator setup](../../.github/containers.md#confirm-package-linkage).
@@ -123,7 +125,7 @@ and source; the workflow downloads their validated IDs with digest checks.
 seal and rechecks original source CI. It calls
 `scripts/ci/container-release.mjs:publishPrepared`, which verifies both archive
 hashes and OCI digests before registry writes. Before each image, source, CI,
-producer, environment, and private-package metadata are rechecked. A
+producer, environment, and public-package metadata are rechecked. A
 matching existing source tag is inspected remotely and left untouched, even if
 package metadata has not caught up. Only the registry's explicit manifest-unknown
 response permits copying an unlisted tag; authorization and transport failures
@@ -150,7 +152,7 @@ without deleting the original archives or rerunning their producer.
 - Inspect the hosted job summary and authenticated package metadata for both
   destinations. Marker success proves package bootstrap, not Enterprise availability.
 - A package or metadata permission failure needs operator access repair. Keep
-  the main-only environment policy and private-package checks enabled.
+  the main-only environment policy and public-package checks enabled.
 - Missing repository metadata does not require an approval comment. An explicit
   wrong repository always fails.
 - Treat `bootstrap-*` as non-deployable markers. Release evidence comes from the
@@ -159,7 +161,7 @@ without deleting the original archives or rerunning their producer.
 ## Related docs
 
 - [Container publication procedure](../../.github/containers.md)
-- [First container release specification](../../specs/32-first-container-release.md)
+- [First container release specification](../../specs/plans/32-first-container-release.md)
 - [CI execution flow](github-actions-testing.md)
 
 ## Manual Notes
@@ -167,6 +169,8 @@ without deleting the original archives or rerunning their producer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-09-30 11:18: Record the bootstrap-only private marker exception while requiring public packages before source images or the chart publish. (authoring-run/ccc78f8c-ca87-4c18-bf6e-f06120699584 - 76e9de599a1c5b1319af4f9003f86ecbf53aa9ec)
 
 - 2026-09-22 03:04: Use manual dispatch without an independent approval or linkage comment (codex/01a0c70f-8a8f-7c62-ac81-ee1a3e99f48b - 149ac0fe)
 

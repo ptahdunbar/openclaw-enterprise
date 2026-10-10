@@ -1,0 +1,64 @@
+{
+  "input": 3,
+  "withheld": 0,
+  "records": [
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:47.530955411Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "wrapper",
+      "level": "error",
+      "message": "openclaw.model_probe",
+      "fields": {
+        "elapsedMs": 15092,
+        "capMs": 65000,
+        "cpuWaitMs": 377,
+        "code": "AUTHENTICATION_FAILED"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:47.531088278Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "wrapper",
+      "level": "error",
+      "message": "runtime.startup_phase",
+      "fields": {
+        "container": "gateway",
+        "phase": "model-probe",
+        "outcome": "failed",
+        "ms": 15100,
+        "sinceStartMs": 15100
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-09-30T14:58:47.531469929Z",
+      "stream": {
+        "source": "gateway",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "gateway",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "wrapper",
+      "level": "error",
+      "message": "Harness model authentication probe failed."
+    }
+  ]
+}

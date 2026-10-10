@@ -104,9 +104,10 @@ or exact resources within that Namespace.
 
 OCC creates and owns each Agent's `WorkloadIdentity`. Every admitted revision
 and Agent workload for that Agent uses the same identity, but only the Agent
-workload bound to its single active revision can act. An Agent workload cannot
-assume a human session, inherit a creator's Role, use the deploying user's
-credentials or provider sessions, or select another Agent's identity.
+workload bound to its single active revision can act. An Agent workload does not
+yet support inheriting its creator's identity or Role, assuming a human session,
+or using the deploying user's credentials or provider sessions. It cannot select
+another Agent's identity.
 
 Each Agent has one `WorkloadIdentity` backed by a dedicated Kubernetes
 `ServiceAccount`. Its workload authenticates to OCC using a short-lived,

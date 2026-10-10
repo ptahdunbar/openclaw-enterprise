@@ -2,7 +2,10 @@ import { request } from "node:http";
 import { isAbsolute, resolve } from "node:path";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/credentials/client-contracts.ts";
-import { normalizePushRefAllowlist } from "../../drivers/repo/credentials/client-contracts.ts";
+import {
+  hasControlCharacter,
+  normalizePushRefAllowlist,
+} from "../../drivers/repo/credentials/client-contracts.ts";
 import type {
   RepositoryCredentialBoundSessionInput,
   RepositoryCredentialSessionResult,
@@ -74,13 +77,6 @@ function object(value: unknown, fields: readonly string[]): Record<string, unkno
   return value as Record<string, unknown>;
 }
 
-function hasControlCharacters(value: string): boolean {
-  return [...value].some((character) => {
-    const code = character.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f;
-  });
-}
-
 function githubId(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -92,9 +88,9 @@ function githubId(value: unknown): value is string {
 function identity(value: unknown): string {
   if (
     typeof value !== "string" ||
-    Buffer.byteLength(value) < 1 ||
+    value.length === 0 ||
     Buffer.byteLength(value) > 512 ||
-    hasControlCharacters(value)
+    hasControlCharacter(value)
   ) {
     return unavailable();
   }
@@ -246,7 +242,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
       !isAbsolute(options.controlSocket) ||
       resolve(options.controlSocket) !== options.controlSocket ||
       Buffer.byteLength(options.controlSocket) > 103 ||
-      hasControlCharacters(options.controlSocket)
+      hasControlCharacter(options.controlSocket)
     ) {
       throw new Error("The repository credential control socket must be an absolute Unix path.");
     }
@@ -315,7 +311,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
         typeof entry.description !== "string" ||
         entry.description.trim().length === 0 ||
         entry.description.length > 512 ||
-        hasControlCharacters(entry.description)
+        hasControlCharacter(entry.description)
       ) {
         continue;
       }
@@ -440,7 +436,8 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
     maximumResponseBytes = 16 * 1024,
   ): Promise<Reply> {
     const body = input === undefined ? "" : JSON.stringify(input);
-    if (Buffer.byteLength(body) > 16 * 1024) {
+    const bodyBytes = Buffer.byteLength(body);
+    if (bodyBytes > 16 * 1024) {
       throw new RepositoryCredentialControlError(false);
     }
     try {
@@ -458,7 +455,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
               host: "localhost",
               connection: "close",
               "content-type": "application/json",
-              "content-length": Buffer.byteLength(body),
+              "content-length": bodyBytes,
               ...(admissionId === undefined ? {} : { "x-admission-id": admissionId }),
             },
           },

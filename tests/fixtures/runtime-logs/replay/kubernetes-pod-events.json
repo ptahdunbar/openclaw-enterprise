@@ -1,0 +1,155 @@
+{
+  "items": [
+    {
+      "type": "Normal",
+      "reason": "Scheduled",
+      "message": "Successfully assigned oce-0123456789abcde/gateway-000000000000-0000000000-2fkbx to k3d-occ-dev-example-server-0",
+      "count": null,
+      "series": null,
+      "firstTimestamp": null,
+      "lastTimestamp": null,
+      "eventTime": "2026-09-30T14:58:30.638855Z",
+      "involvedObject": {
+        "kind": "Pod",
+        "namespace": "oce-0123456789abcde",
+        "name": "gateway-000000000000-0000000000-2fkbx",
+        "uid": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "type": "Normal",
+      "reason": "Pulled",
+      "message": "Container image \"localhost/openclaw-enterprise-runtime@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\" already present on machine and can be accessed by the pod",
+      "count": 1,
+      "series": null,
+      "firstTimestamp": "2026-09-30T14:58:31Z",
+      "lastTimestamp": "2026-09-30T14:58:31Z",
+      "eventTime": null,
+      "involvedObject": {
+        "kind": "Pod",
+        "namespace": "oce-0123456789abcde",
+        "name": "gateway-000000000000-0000000000-2fkbx",
+        "uid": "00000000-0000-4000-8000-000000000001",
+        "fieldPath": "spec.initContainers{prepare-private-state}"
+      }
+    },
+    {
+      "type": "Normal",
+      "reason": "Created",
+      "message": "Container created",
+      "count": 1,
+      "series": null,
+      "firstTimestamp": "2026-09-30T14:58:31Z",
+      "lastTimestamp": "2026-09-30T14:58:31Z",
+      "eventTime": null,
+      "involvedObject": {
+        "kind": "Pod",
+        "namespace": "oce-0123456789abcde",
+        "name": "gateway-000000000000-0000000000-2fkbx",
+        "uid": "00000000-0000-4000-8000-000000000001",
+        "fieldPath": "spec.initContainers{prepare-private-state}"
+      }
+    },
+    {
+      "type": "Normal",
+      "reason": "Started",
+      "message": "Container started",
+      "count": 1,
+      "series": null,
+      "firstTimestamp": "2026-09-30T14:58:31Z",
+      "lastTimestamp": "2026-09-30T14:58:31Z",
+      "eventTime": null,
+      "involvedObject": {
+        "kind": "Pod",
+        "namespace": "oce-0123456789abcde",
+        "name": "gateway-000000000000-0000000000-2fkbx",
+        "uid": "00000000-0000-4000-8000-000000000001",
+        "fieldPath": "spec.initContainers{prepare-private-state}"
+      }
+    },
+    {
+      "type": "Normal",
+      "reason": "Pulled",
+      "message": "Container image \"localhost/openclaw-enterprise-runtime@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\" already present on machine and can be accessed by the pod",
+      "count": 1,
+      "series": null,
+      "firstTimestamp": "2026-09-30T14:58:32Z",
+      "lastTimestamp": "2026-09-30T14:58:32Z",
+      "eventTime": null,
+      "involvedObject": {
+        "kind": "Pod",
+        "namespace": "oce-0123456789abcde",
+        "name": "gateway-000000000000-0000000000-2fkbx",
+        "uid": "00000000-0000-4000-8000-000000000001",
+        "fieldPath": "spec.containers{gateway}"
+      }
+    },
+    {
+      "type": "Normal",
+      "reason": "Created",
+      "message": "Container created",
+      "count": 1,
+      "series": null,
+      "firstTimestamp": "2026-09-30T14:58:32Z",
+      "lastTimestamp": "2026-09-30T14:58:32Z",
+      "eventTime": null,
+      "involvedObject": {
+        "kind": "Pod",
+        "namespace": "oce-0123456789abcde",
+        "name": "gateway-000000000000-0000000000-2fkbx",
+        "uid": "00000000-0000-4000-8000-000000000001",
+        "fieldPath": "spec.containers{gateway}"
+      }
+    },
+    {
+      "type": "Normal",
+      "reason": "Started",
+      "message": "Container started",
+      "count": 1,
+      "series": null,
+      "firstTimestamp": "2026-09-30T14:58:32Z",
+      "lastTimestamp": "2026-09-30T14:58:32Z",
+      "eventTime": null,
+      "involvedObject": {
+        "kind": "Pod",
+        "namespace": "oce-0123456789abcde",
+        "name": "gateway-000000000000-0000000000-2fkbx",
+        "uid": "00000000-0000-4000-8000-000000000001",
+        "fieldPath": "spec.containers{gateway}"
+      }
+    },
+    {
+      "type": "Warning",
+      "reason": "Unhealthy",
+      "message": "Readiness probe failed: ",
+      "count": 5,
+      "series": null,
+      "firstTimestamp": "2026-09-30T14:58:32Z",
+      "lastTimestamp": "2026-09-30T14:58:39Z",
+      "eventTime": null,
+      "involvedObject": {
+        "kind": "Pod",
+        "namespace": "oce-0123456789abcde",
+        "name": "gateway-000000000000-0000000000-2fkbx",
+        "uid": "00000000-0000-4000-8000-000000000001",
+        "fieldPath": "spec.containers{gateway}"
+      }
+    },
+    {
+      "type": "Normal",
+      "reason": "SuccessfulCreate",
+      "message": "Created pod: gateway-000000000000-0000000000-2fkbx",
+      "count": 1,
+      "series": null,
+      "firstTimestamp": "2026-09-30T14:58:30Z",
+      "lastTimestamp": "2026-09-30T14:58:30Z",
+      "eventTime": null,
+      "involvedObject": {
+        "kind": "ReplicaSet",
+        "namespace": "oce-0123456789abcde",
+        "name": "gateway-000000000000-0000000000",
+        "uid": "00000000-0000-4000-8000-000000000002"
+      }
+    }
+  ]
+}

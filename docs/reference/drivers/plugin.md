@@ -25,6 +25,11 @@ The [shared interface](../../../packages/contracts/src/index.ts) exposes:
   An empty reviewer array means explicit selection is unsupported at that scope.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
+- `validateAgentConfiguration(selections, configuration)` (optional): check
+  selections against the Agent's Configuration values at Agent create and
+  update, provisioning, and deployment, which checks again because a
+  Configuration save does not know its Agents. A `ConfigurationHarnessError`
+  naming the setting becomes `400`; other refusals get fixed text.
 - `listCatalog(context)`: read the catalog for a Namespace, Agent, Harness,
   native Configuration, and abort signal.
 
@@ -78,8 +83,9 @@ Both routes require Agent `create` in the Namespace. A Secret reference must
 belong to that Namespace and additionally requires caller `operate` on the exact
 Secret. OCC reads the current value through the selected SecretDriver and passes
 it to the PluginDriver in server memory. The bundled Codex Driver derives the
-account ID from that PAT; clients do not provide an account ID. A deleted or
-foreign Secret or backend ownership mismatch returns `404`, a denied grant returns
+account ID from that PAT; clients do not provide an account ID. A Secret reference
+to another Namespace returns `400 INVALID_REQUEST`. A deleted Secret or backend
+ownership mismatch returns `404`, a denied grant returns
 `403`, and an unavailable backend returns a safe dependency error. A rejected PAT returns
 `PLUGIN_DISCOVERY_CREDENTIALS_REJECTED`; rotate the Secret and retry.
 
@@ -165,4 +171,4 @@ and [Compute startup warnings](compute.md#plugin-startup-warnings).
 
 - [Bundled Driver source](../../../apps/controller/src/drivers/plugin/index.ts), [runtime translator](../../../apps/controller/src/drivers/plugin/runtime-translator.ts), and [trusted selection](../../../apps/controller/src/composition/installation-config.ts)
 - [Agent plugin runtime flow](../../flows/agent-plugins.md), [deployment](../../guides/deploy.md), and [verification guide](../../testing/plugins.md)
-- [Implementation proof requirements](../../../specs/16-plugin-driver.md#verification)
+- [Implementation proof requirements](../../../specs/plans/16-plugin-driver.md#verification)
