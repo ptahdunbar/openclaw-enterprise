@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 1,
+  "statusVocabulary": {
+    "reference-supported": "Supported by the OpenShell reference path and used as a parity target.",
+    "documented": "Docker documentation describes support; OCC live conformance is still required.",
+    "documented-limitation": "Docker documentation describes a current limitation.",
+    "unknown": "No equivalent guarantee has been proven or documented for this profile.",
+    "not-applicable": "The control does not apply to this profile."
+  },
+  "proofRule": "A documented capability is not OCC-qualified until a live conformance artifact proves the exact selected profile.",
+  "profiles": [
+    "openshell",
+    "docker-local",
+    "docker-cloud"
+  ],
+  "controls": [
+    {
+      "id": "network.host-allow-deny",
+      "category": "network",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "network.http-method-path",
+      "category": "network",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "documented-limitation",
+      "proofRequired": true,
+      "note": "Cloud docs currently state HTTP method/path restrictions are unsupported."
+    },
+    {
+      "id": "network.calling-binary-binding",
+      "category": "network",
+      "openshell": "reference-supported",
+      "dockerLocal": "unknown",
+      "dockerCloud": "unknown",
+      "proofRequired": true
+    },
+    {
+      "id": "network.runtime-mutation",
+      "category": "network",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "network.decision-logs",
+      "category": "network",
+      "openshell": "reference-supported",
+      "dockerLocal": "unknown",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "filesystem.outer-isolation",
+      "category": "filesystem",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "filesystem.path-level-policy",
+      "category": "filesystem",
+      "openshell": "reference-supported",
+      "dockerLocal": "unknown",
+      "dockerCloud": "unknown",
+      "proofRequired": true
+    },
+    {
+      "id": "process.sandboxed-exec",
+      "category": "process",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "process.durable-process",
+      "category": "process",
+      "openshell": "reference-supported",
+      "dockerLocal": "unknown",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "process.signal-cancel",
+      "category": "process",
+      "openshell": "reference-supported",
+      "dockerLocal": "unknown",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "process.reduced-privilege-seccomp",
+      "category": "process",
+      "openshell": "reference-supported",
+      "dockerLocal": "unknown",
+      "dockerCloud": "unknown",
+      "proofRequired": true,
+      "note": "Docker's microVM trust boundary is not automatically equivalent to OpenShell's in-sandbox process confinement."
+    },
+    {
+      "id": "credential.material-outside-workload",
+      "category": "credential",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "credential.sentinel-or-opaque-reference",
+      "category": "credential",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "unknown",
+      "proofRequired": true
+    },
+    {
+      "id": "credential.destination-bound-injection",
+      "category": "credential",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "unknown",
+      "proofRequired": true
+    },
+    {
+      "id": "credential.sandbox-scope",
+      "category": "credential",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "credential.account-scope",
+      "category": "credential",
+      "openshell": "not-applicable",
+      "dockerLocal": "unknown",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "credential.oauth",
+      "category": "credential",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "credential.oauth-sandbox-scope",
+      "category": "credential",
+      "openshell": "reference-supported",
+      "dockerLocal": "unknown",
+      "dockerCloud": "documented-limitation",
+      "proofRequired": true,
+      "note": "Cloud docs currently state OAuth credentials cannot use sandbox scope."
+    },
+    {
+      "id": "credential.refresh-rotation",
+      "category": "credential",
+      "openshell": "reference-supported",
+      "dockerLocal": "documented",
+      "dockerCloud": "unknown",
+      "proofRequired": true
+    },
+    {
+      "id": "credential.generalized-token-exchange",
+      "category": "credential",
+      "openshell": "reference-supported",
+      "dockerLocal": "unknown",
+      "dockerCloud": "unknown",
+      "proofRequired": true
+    },
+    {
+      "id": "identity.occ-workload-identity-binding",
+      "category": "identity",
+      "openshell": "reference-supported",
+      "dockerLocal": "unknown",
+      "dockerCloud": "unknown",
+      "proofRequired": true
+    },
+    {
+      "id": "api.short-lived-endpoint-credential",
+      "category": "api",
+      "openshell": "not-applicable",
+      "dockerLocal": "not-applicable",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "kit.required-capability-fail-closed",
+      "category": "kit",
+      "openshell": "not-applicable",
+      "dockerLocal": "documented",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "kit.authority-diff",
+      "category": "kit",
+      "openshell": "not-applicable",
+      "dockerLocal": "documented",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "lifecycle.snapshot-restore",
+      "category": "lifecycle",
+      "openshell": "unknown",
+      "dockerLocal": "unknown",
+      "dockerCloud": "documented",
+      "proofRequired": true
+    },
+    {
+      "id": "browser.isolated-workload",
+      "category": "browser",
+      "openshell": "reference-supported",
+      "dockerLocal": "unknown",
+      "dockerCloud": "unknown",
+      "proofRequired": true
+    },
+    {
+      "id": "computer.general-computer-use",
+      "category": "computer",
+      "openshell": "unknown",
+      "dockerLocal": "unknown",
+      "dockerCloud": "unknown",
+      "proofRequired": true
+    }
+  ],
+  "upstreamFeedback": {
+    "repository": "docker/sbx-releases",
+    "rule": "Open feedback only after a live reproduction exists.",
+    "kitSpecRepository": "docker/sandbox-kit-spec"
+  }
+}
